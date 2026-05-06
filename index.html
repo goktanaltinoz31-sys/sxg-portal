@@ -1,11 +1,125 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="de">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SXG Portal</title>
-  </head>
-  <body>
-    <div id="root"></div>
-  </body>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SXG Mitarbeiterportal</title>
+
+  <style>
+    body{
+      margin:0;
+      font-family:Arial;
+      background:#f4f4f4;
+      color:#111;
+    }
+
+    .header{
+      background:#111;
+      color:white;
+      padding:20px;
+      text-align:center;
+    }
+
+    .container{
+      max-width:1200px;
+      margin:auto;
+      padding:20px;
+    }
+
+    .grid{
+      display:grid;
+      grid-template-columns:repeat(auto-fit,minmax(250px,1fr));
+      gap:20px;
+    }
+
+    .card{
+      background:white;
+      padding:25px;
+      border-radius:18px;
+      box-shadow:0 5px 20px rgba(0,0,0,0.08);
+    }
+
+    h1,h2{
+      margin-top:0;
+    }
+
+    button{
+      background:#111;
+      color:white;
+      border:none;
+      padding:12px 18px;
+      border-radius:10px;
+      cursor:pointer;
+      width:100%;
+      margin-top:10px;
+    }
+
+    button:hover{
+      opacity:0.9;
+    }
+
+    .status{
+      color:green;
+      font-weight:bold;
+    }
+  </style>
+</head>
+
+<body>
+
+<div class="header">
+  <h1>SXG Sicherheit & Service</h1>
+  <p>Mitarbeiterportal</p>
+</div>
+
+<div class="container">
+
+  <div class="grid">
+
+    <div class="card">
+      <h2>Aufträge</h2>
+      <p>Verfügbare Sicherheitsaufträge ansehen.</p>
+      <button>Öffnen</button>
+    </div>
+
+    <div class="card">
+      <h2>Meine Einsätze</h2>
+      <p>Zugewiesene Einsätze verwalten.</p>
+      <button>Öffnen</button>
+    </div>
+
+    <div class="card">
+      <h2>Anwesenheit</h2>
+      <p>Ein- und Ausstempeln.</p>
+      <button>Öffnen</button>
+    </div>
+
+    <div class="card">
+      <h2>Stundenzettel</h2>
+      <p>Arbeitsstunden erfassen.</p>
+      <button>Öffnen</button>
+    </div>
+
+    <div class="card">
+      <h2>Urlaubsanträge</h2>
+      <p>Urlaub beantragen und verwalten.</p>
+      <button>Öffnen</button>
+    </div>
+
+    <div class="card">
+      <h2>Profil</h2>
+      <p>Mitarbeiterdaten und Dokumente.</p>
+      <button>Öffnen</button>
+    </div>
+
+  </div>
+
+  <div class="card" style="margin-top:20px;">
+    <h2>Systemstatus</h2>
+    <p class="status">Portal erfolgreich online.</p>
+  </div>
+
+</div>
+
+</body>
 </html>
