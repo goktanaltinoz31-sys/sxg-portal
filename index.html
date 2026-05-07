@@ -245,38 +245,92 @@ async function delJob(id){if(confirm("Auftrag löschen?")){const r=await sb.from
 async function assignJob(id,pid=myId()){const j=jobOf(id);if(assignedCount(id)>=Number(j.needed_employees||1))return msg("Dieser Einsatz ist voll.");if(state.assignments.some(a=>String(a.job_id)===String(id)&&(a.profile_id===pid||a.employee_id===pid)))return msg("Schon eingetragen.");const r=await sb.from("job_assignments").insert({job_id:id,employee_id:pid,profile_id:pid});if(r.error)return msg(r.error.message);await apiPush("Einsatz eingetragen",j.title,[pid]);await loadAll();render()}
 async function unassignJob(id,pid=myId()){const row=state.assignments.find(a=>String(a.job_id)===String(id)&&(a.profile_id===pid||a.employee_id===pid));if(!row)return;const r=await sb.from("job_assignments").delete().eq("id",row.id);if(r.error)return msg(r.error.message);await loadAll();render()}
 async function checkIn(jobId){
+  await loadAll();
   const j=jobOf(jobId);
   if(!j)return msg("Einsatz nicht gefunden.");
-  const reason=checkInBlockReason(j);
-  if(reason)return msg(reason);
-  if(openAttendanceFor(myId()))return msg("Du bist bereits eingecheckt. Bitte erst auschecken.");
   if(!navigator.geolocation)return msg("GPS nicht verfügbar.");
+
   navigator.geolocation.getCurrentPosition(async pos=>{
     const lat=pos.coords.latitude,lng=pos.coords.longitude;
+
     if(j.lat&&j.lng){
       const dist=hav(lat,lng,Number(j.lat),Number(j.lng));
-      if(dist>Number(j.geo_radius_m||1000))return msg("Zu weit vom Einsatzort entfernt: "+Math.round(dist)+" m");
+      const radius=Number(j.geo_radius_m||1000);
+      if(dist>radius)return msg("Zu weit entfernt vom Einsatzort.");
     }
-    const now=new Date().toISOString();
-    const r=await sb.from("attendance").insert({profile_id:myId(),employee_id:myId(),job_id:jobId,check_in:now,clock_in:now,lat,lng,present:true});
+
+    const now=new Date();
+    const start=new Date(`${jobDate(j)}T${String(j.start_time||"00:00")}:00`);
+    if(now.getTime()>start.getTime()+15*60*1000){
+      return msg("Check-in nur bis 15 Minuten nach Beginn möglich.");
+    }
+
+    const already=state.attendance.find(a=>(a.profile_id||a.employee_id)===myId()&&!a.check_out&&!a.clock_out);
+    if(already)return msg("Du bist bereits eingecheckt.");
+
+    const iso=now.toISOString();
+    const r=await sb.from("attendance").insert({
+      profile_id:myId(),
+      employee_id:myId(),
+      job_id:jobId,
+      check_in:iso,
+      clock_in:iso,
+      lat,lng,
+      present:true
+    });
+
     if(r.error)return msg(r.error.message);
-    await apiPush("Mitarbeiter eingecheckt",nameOf(myId())+" bei "+j.title);
+
     startTracking(jobId);
     await loadAll();
     render();
-  },()=>msg("GPS erlauben, sonst kein Check-in möglich."),{enableHighAccuracy:true,timeout:10000})
+  },()=>msg("GPS erlauben."),{enableHighAccuracy:true,timeout:12000});
 }
 async function checkOut(){
   await loadAll();
-  const open=openAttendanceFor(myId());
+
+  const open=state.attendance.find(a=>
+    (a.profile_id||a.employee_id)===myId() &&
+    !a.check_out &&
+    !a.clock_out
+  );
+
   if(!open)return msg("Kein offener Check-in.");
+
   const out=new Date().toISOString();
-  const r=await sb.from("attendance").update({check_out:out,clock_out:out,present:false}).eq("id",open.id);
+
+  const r=await sb.from("attendance").update({
+    check_out:out,
+    clock_out:out,
+    present:false
+  }).eq("id",open.id);
+
   if(r.error)return msg(r.error.message);
-  await createTimesheetFromAttendance(open,out);
+
+  const mins=Math.max(0,(new Date(out)-new Date(open.check_in||open.clock_in))/60000);
+  const hours=Math.round((mins/60)*10000)/10000;
+
+  const j=jobOf(open.job_id)||{};
+
+  await sb.from("timesheets").insert({
+    profile_id:open.profile_id||open.employee_id,
+    employee_id:open.profile_id||open.employee_id,
+    job_id:open.job_id,
+    work_date:new Date(open.check_in||open.clock_in).toISOString().slice(0,10),
+    start_time:new Date(open.check_in||open.clock_in).toTimeString().slice(0,5),
+    end_time:new Date(out).toTimeString().slice(0,5),
+    hours_worked:hours,
+    hours:hours,
+    location:j.location||"",
+    activity:j.title||"Einsatz",
+    description:"Automatisch erstellt",
+    attendance_id:open.id,
+    approved:false,
+    status:"pending"
+  });
+
   stopTracking();
   await loadAll();
-  state.page="assignments";
   render();
 }
 async function createTimesheetFromAttendance(att,outIso){
@@ -471,273 +525,7 @@ function bind(){const map={loginForm:login,regForm:register,jobForm:saveJob,time
 async function refreshPortal(){await loadAll();render()}
 Object.assign(window,{refreshPortal,setPage,openModal,closeModal,logout,delJob,assignJob,unassignJob,checkIn,checkOut,delTime,reviewLeave,askPush,openFile,quickApprove,joinWaitlist,removeWaitlist,promoteWaitlist,openJobMapById,adminClockIn,adminClockOut,adminClockIn,adminClockOut,state,render});
 
-/* SXG v7.5 FINAL CLOCK/RADIUS OVERRIDE */
-function sxgOpenAttendance(pid, jobId=null){
-  return state.attendance.find(a =>
-    (a.profile_id || a.employee_id) === pid &&
-    !a.check_out && !a.clock_out &&
-    (!jobId || String(a.job_id) === String(jobId))
-  );
-}
-function sxgAttendanceFor(pid, jobId){
-  return state.attendance.find(a =>
-    (a.profile_id || a.employee_id) === pid &&
-    String(a.job_id) === String(jobId)
-  );
-}
-function sxgTimesheetFor(pid, jobId, attendanceId=null){
-  return state.timesheets.find(t =>
-    (attendanceId && String(t.attendance_id||"") === String(attendanceId)) ||
-    ((t.profile_id || t.employee_id) === pid && String(t.job_id||"") === String(jobId||""))
-  );
-}
-function sxgJobStart(j){
-  const d=jobDate(j)||j?.start_date||"";
-  if(!d)return null;
-  const t=String(j?.start_time||"00:00").slice(0,5);
-  const dt=new Date(`${d}T${t}:00`);
-  return isNaN(dt.getTime())?null:dt;
-}
-function sxgJobEnd(j){
-  const d=jobDate(j)||j?.start_date||"";
-  if(!d)return null;
-  const t=String(j?.end_time||"23:59").slice(0,5);
-  const dt=new Date(`${d}T${t}:00`);
-  const start=sxgJobStart(j);
-  if(start && dt < start) dt.setDate(dt.getDate()+1);
-  return isNaN(dt.getTime())?null:dt;
-}
-function sxgJobExpired(j){
-  const end=sxgJobEnd(j);
-  return !!end && Date.now() > end.getTime();
-}
-function sxgCanCheckIn(j){
-  const start=sxgJobStart(j), end=sxgJobEnd(j), now=Date.now();
-  if(end && now > end.getTime()) return false;
-  if(start && now > start.getTime()+15*60*1000) return false;
-  return true;
-}
-function sxgCheckInReason(j){
-  const start=sxgJobStart(j), end=sxgJobEnd(j), now=Date.now();
-  if(end && now > end.getTime()) return "Der Einsatz ist bereits beendet.";
-  if(start && now > start.getTime()+15*60*1000) return "Check-in ist nur bis 15 Minuten nach Einsatzbeginn möglich. Admin kann dich nachträglich einchecken.";
-  return "";
-}
-function sxgMinutesBetween(a,b){
-  const A=new Date(a).getTime(), B=new Date(b).getTime();
-  if(!A || !B || B<A) return 0;
-  return (B-A)/60000;
-}
-function sxgIsoDate(x){try{return new Date(x).toISOString().slice(0,10)}catch(e){return today()}}
-function sxgIsoTime(x){try{return new Date(x).toTimeString().slice(0,5)}catch(e){return ""}}
 
-async function sxgCreateTimesheet(att,outIso){
-  const inIso=att.check_in||att.clock_in;
-  if(!inIso || !outIso) return;
-  const pid=att.profile_id||att.employee_id||myId();
-  const j=jobOf(att.job_id)||{};
-  const hours=Math.max(0,Math.round((sxgMinutesBetween(inIso,outIso)/60)*10000)/10000);
-  const row={
-    profile_id:pid,
-    employee_id:pid,
-    job_id:att.job_id||null,
-    work_date:sxgIsoDate(inIso),
-    start_time:sxgIsoTime(inIso),
-    end_time:sxgIsoTime(outIso),
-    break_minutes:0,
-    location:j.location||j.address||"",
-    activity:j.title||"Einsatz",
-    description:"Automatisch aus Check-in/Check-out erstellt",
-    hours_worked:hours,
-    hours:hours,
-    approved:false,
-    status:"pending",
-    attendance_id:att.id
-  };
-  const old=sxgTimesheetFor(pid,att.job_id,att.id);
-  const r=old ? await sb.from("timesheets").update(row).eq("id",old.id) : await sb.from("timesheets").insert(row);
-  if(r.error) return msg("Stunden konnten nicht gespeichert werden: "+r.error.message);
-}
-
-async function checkIn(jobId){
-  await loadAll();
-  const j=jobOf(jobId);
-  if(!j) return msg("Einsatz nicht gefunden.");
-  const reason=sxgCheckInReason(j);
-  if(reason) return msg(reason);
-  if(sxgOpenAttendance(myId())) return msg("Du bist bereits eingecheckt. Bitte erst auschecken.");
-  if(!navigator.geolocation) return msg("GPS nicht verfügbar.");
-
-  navigator.geolocation.getCurrentPosition(async pos=>{
-    const lat=pos.coords.latitude, lng=pos.coords.longitude;
-
-    if(j.lat && j.lng){
-      const dist=hav(lat,lng,Number(j.lat),Number(j.lng));
-      const radius=Number(j.geo_radius_m||1000);
-      if(dist > radius){
-        return msg("Du bist zu weit vom Einsatzort entfernt. Entfernung: "+Math.round(dist)+" m / erlaubt: "+radius+" m");
-      }
-    } else {
-      return msg("Für diesen Auftrag fehlen GPS-Koordinaten. Admin muss Latitude und Longitude beim Auftrag eintragen.");
-    }
-
-    const now=new Date().toISOString();
-    const r=await sb.from("attendance").insert({
-      profile_id:myId(),
-      employee_id:myId(),
-      job_id:jobId,
-      check_in:now,
-      clock_in:now,
-      lat,
-      lng,
-      present:true
-    });
-    if(r.error) return msg(r.error.message);
-    await apiPush("Mitarbeiter eingecheckt",nameOf(myId())+" bei "+(j.title||"Einsatz"));
-    startTracking(jobId);
-    await loadAll();
-    state.page="assignments";
-    render();
-  },()=>msg("GPS erlauben, sonst kein Check-in möglich."),{enableHighAccuracy:true,timeout:12000,maximumAge:0});
-}
-
-async function checkOut(){
-  await loadAll();
-  const open=sxgOpenAttendance(myId());
-  if(!open) return msg("Kein offener Check-in gefunden.");
-  const out=new Date().toISOString();
-  const r=await sb.from("attendance").update({
-    check_out:out,
-    clock_out:out,
-    present:false
-  }).eq("id",open.id);
-  if(r.error) return msg(r.error.message);
-  await sxgCreateTimesheet(open,out);
-  stopTracking();
-  await loadAll();
-  state.page="assignments";
-  render();
-}
-
-async function adminClockIn(e){
-  e.preventDefault();
-  const f=new FormData(e.target);
-  const pid=f.get("profile_id"), jobId=f.get("job_id"), dt=f.get("clock_in_at");
-  if(!pid||!jobId||!dt) return msg("Mitarbeiter, Auftrag und Zeit auswählen.");
-  await loadAll();
-  if(sxgOpenAttendance(pid)) return msg("Dieser Mitarbeiter ist bereits eingecheckt.");
-  const iso=new Date(dt).toISOString();
-  const j=jobOf(jobId)||{};
-  const r=await sb.from("attendance").insert({
-    profile_id:pid,
-    employee_id:pid,
-    job_id:jobId,
-    check_in:iso,
-    clock_in:iso,
-    present:true,
-    lat:j.lat||null,
-    lng:j.lng||null
-  });
-  if(r.error) return msg(r.error.message);
-  closeModal(); await loadAll(); render();
-}
-async function adminClockOut(e){
-  e.preventDefault();
-  const f=new FormData(e.target);
-  const id=f.get("attendance_id"), dt=f.get("clock_out_at");
-  if(!id||!dt) return msg("Offenen Check-in und Zeit auswählen.");
-  await loadAll();
-  const att=state.attendance.find(a=>String(a.id)===String(id));
-  if(!att) return msg("Check-in nicht gefunden.");
-  const iso=new Date(dt).toISOString();
-  const r=await sb.from("attendance").update({
-    check_out:iso,
-    clock_out:iso,
-    present:false
-  }).eq("id",id);
-  if(r.error) return msg(r.error.message);
-  await sxgCreateTimesheet(att,iso);
-  closeModal(); await loadAll(); render();
-}
-
-function assignmentsHtml(){
-  const baseRows=admin()?state.assignments:myAssignments();
-  const timeRows=state.timesheets
-    .filter(t=>admin() || ((t.profile_id||t.employee_id)===myId()))
-    .map(t=>({job_id:t.job_id,profile_id:t.profile_id||t.employee_id,timesheet_id:t.id,fromTimesheet:true}));
-  const allRows=[...baseRows,...timeRows];
-  const seen=new Set();
-  const unique=allRows.filter(a=>{
-    const key=String(a.job_id||"none")+"-"+String(a.profile_id||a.employee_id)+"-"+String(a.timesheet_id||"assignment");
-    if(seen.has(key)) return false;
-    seen.add(key); return true;
-  });
-
-  const current=baseRows.filter(a=>{
-    const pid=a.profile_id||a.employee_id, j=jobOf(a.job_id)||{};
-    return sxgOpenAttendance(pid,a.job_id) || (!sxgJobExpired(j) && !sxgTimesheetFor(pid,a.job_id));
-  });
-
-  const history=unique.filter(a=>{
-    const pid=a.profile_id||a.employee_id, j=jobOf(a.job_id)||{};
-    return a.fromTimesheet || sxgTimesheetFor(pid,a.job_id) || sxgJobExpired(j);
-  });
-
-  return `<section class="panel">
-    <h2>${admin()?'Einsätze Übersicht':'Meine Einsätze'}</h2>
-    <h3>Aktuell</h3>
-    <div class="table">${current.map(a=>sxgAssignmentRow(a,false)).join("")||`<div class="empty">Keine aktuellen Einsätze</div>`}</div>
-    <br>
-    <h3>Einsatz-Historie</h3>
-    <div class="table">${history.map(a=>sxgAssignmentRow(a,true)).join("")||`<div class="empty">Noch keine abgeschlossenen Einsätze</div>`}</div>
-  </section>`;
-}
-
-function sxgAssignmentRow(a,history=false){
-  const pid=a.profile_id||a.employee_id;
-  const j=jobOf(a.job_id)||{};
-  const att=sxgAttendanceFor(pid,a.job_id);
-  const ts=state.timesheets.find(t=>String(t.id||"")===String(a.timesheet_id||"")) || sxgTimesheetFor(pid,a.job_id,att?.id);
-  const open=sxgOpenAttendance(pid,a.job_id);
-  const status=open?"läuft":ts?"abgeschlossen":sxgJobExpired(j)?"abgelaufen":"aktuell";
-  const actual=ts?`${esc(ts.work_date||"")} ${esc(ts.start_time||"")} - ${esc(ts.end_time||"")}`:(att?`${att.check_in?new Date(att.check_in).toLocaleString():""} ${att.check_out?"bis "+new Date(att.check_out).toLocaleString():""}`:"");
-  const hours=ts?`${Number(ts.hours_worked||ts.hours||0).toFixed(4)} h`:"";
-  return `<div class="row">
-    <div>
-      <b>${esc(j.title||ts?.activity||"Einsatz")}</b><br>
-      ${esc(j.location||ts?.location||"")} ${j.address?`· ${esc(j.address)}`:""}<br>
-      ${j.id?`Plan: ${esc(jobDate(j))} ${esc(j.start_time||"")} - ${esc(j.end_time||"")}<br>`:""}
-      ${actual?`Tatsächlich: ${actual}<br>`:""}
-      ${admin()?`Mitarbeiter: <b>${esc(nameOf(pid))}</b>`:""}
-    </div>
-    <span>${hours}</span>
-    <span class="badge ${status==="abgeschlossen"?'ok':status==="läuft"?'warn':'ok'}">${status}</span>
-    <span>${open&&!admin()?`<button class="ok" onclick="checkOut()">Auschecken</button>`:""} ${open&&admin()?`<button class="ok" onclick="openModal('adminClockOut')">Auschecken</button>`:""} ${j.lat&&j.lng?`<button class="secondary" onclick="window.open('https://www.google.com/maps?q=${j.lat},${j.lng}','_blank')">Ort</button>`:""}</span>
-  </div>`;
-}
-
-function jobsHtml(){
-  const list=state.jobs.filter(j=>admin()||((j.status||"open")==="open"&&!sxgJobExpired(j)&&(!jobDate(j)||jobDate(j)>=today())));
-  return `<section class="panel">
-    <div class="toolbar"><h2>${admin()?'Aufträge verwalten':'Offene Einsätze'}</h2>${admin()?`<button onclick="openModal('job')">+ Auftrag</button> <button onclick="openModal('repeat')">Wiederholen</button>`:""}</div>
-    <div class="table">${list.map(j=>{
-      let c=assignedCount(j.id),max=Number(j.needed_employees||1),full=c>=max,mine=isAssigned(j.id), reason=sxgCheckInReason(j);
-      return `<div class="row">
-        <div><b>${esc(j.title)}</b><br>${esc(j.client)} · ${esc(j.location)}<br>${esc(j.address||"")}<br>${esc(jobDate(j))} ${esc(j.start_time)}-${esc(j.end_time)}<br>${!admin()&&reason?`<small>${esc(reason)}</small><br>`:""}${admin()?`<b>Eingetragen:</b> ${state.assignments.filter(a=>String(a.job_id)===String(j.id)).map(a=>`${esc(nameOf(a.profile_id||a.employee_id))} <button class='danger' onclick="unassignJob(${j.id},'${a.profile_id||a.employee_id}')">x</button>`).join(" ")||"niemand"}`:""}</div>
-        <span>${c}/${max}</span>
-        <span class="badge ${full?'warn':'ok'}">${full?'voll':'frei'}</span>
-        <div>${admin()?`<button class="secondary" onclick="openModal('assign',${j.id})">Eintragen</button> <button class="secondary" onclick="openJobMapById(${j.id})">Karte</button> <button class="secondary" onclick="openModal('job',${j.id})">Bearbeiten</button> <button class="danger" onclick="delJob(${j.id})">Löschen</button>`:mine?`<button class="ok" onclick="checkIn(${j.id})" ${sxgCanCheckIn(j)?"":"disabled"}>Check-in</button> <button class="secondary" onclick="unassignJob(${j.id})">Austragen</button>`:`<button onclick="assignJob(${j.id})" ${full?'disabled':''}>Eintragen</button> ${full?(isWaitlisted(j.id)?`<button class="secondary" onclick="removeWaitlist(${j.id})">Reserve entfernen</button>`:`<button class="secondary" onclick="joinWaitlist(${j.id})">Reserve</button>`):``}`}</div>
-      </div>`;
-    }).join("")||`<div class="empty">Keine Einsätze</div>`}</div>
-  </section>`;
-}
-
-window.checkIn=checkIn;
-window.checkOut=checkOut;
-window.adminClockIn=adminClockIn;
-window.adminClockOut=adminClockOut;
-window.assignmentsHtml=assignmentsHtml;
-window.jobsHtml=jobsHtml;
 
 init();
 }catch(e){document.getElementById("root").innerHTML='<div class="error"><b>Startfehler:</b>\\n'+String(e.message)+'</div>'}
