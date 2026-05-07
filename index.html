@@ -34,6 +34,25 @@ const jobOf=id=>state.jobs.find(j=>String(j.id)===String(id))||null;
 const today=()=>new Date().toISOString().slice(0,10);
 const jobDate=j=>j?.job_date||j?.start_date||"";
 const msg=t=>alert(t);
+function dateTimeFromJob(j,end=false){
+  const d=jobDate(j)||j?.start_date||"";
+  const t=(end?(j?.end_time||"23:59"):(j?.start_time||"00:00"))||"00:00";
+  if(!d)return null;
+  return new Date(`${d}T${String(t).slice(0,5)}:00`);
+}
+function isJobExpired(j){
+  const end=dateTimeFromJob(j,true);
+  if(!end)return false;
+  return new Date().getTime() > end.getTime() + 15*60*1000;
+}
+function minsBetween(a,b){
+  const A=new Date(a).getTime(),B=new Date(b).getTime();
+  if(!A||!B||B<A)return 0;
+  return Math.max(0,Math.round((B-A)/60000));
+}
+function isoTime(x){try{return new Date(x).toTimeString().slice(0,5)}catch(e){return""}}
+function isoDate(x){try{return new Date(x).toISOString().slice(0,10)}catch(e){return today()}}
+
 function calcNetHours(start,end,breakMin){
   if(!start||!end)return 0;
   const a=String(start).split(":").map(Number), b=String(end).split(":").map(Number);
@@ -121,7 +140,50 @@ async function delJob(id){if(confirm("Auftrag löschen?")){const r=await sb.from
 async function assignJob(id,pid=myId()){const j=jobOf(id);if(assignedCount(id)>=Number(j.needed_employees||1))return msg("Dieser Einsatz ist voll.");if(state.assignments.some(a=>String(a.job_id)===String(id)&&(a.profile_id===pid||a.employee_id===pid)))return msg("Schon eingetragen.");const r=await sb.from("job_assignments").insert({job_id:id,employee_id:pid,profile_id:pid});if(r.error)return msg(r.error.message);await apiPush("Einsatz eingetragen",j.title,[pid]);await loadAll();render()}
 async function unassignJob(id,pid=myId()){const row=state.assignments.find(a=>String(a.job_id)===String(id)&&(a.profile_id===pid||a.employee_id===pid));if(!row)return;const r=await sb.from("job_assignments").delete().eq("id",row.id);if(r.error)return msg(r.error.message);await loadAll();render()}
 async function checkIn(jobId){const j=jobOf(jobId);if(!navigator.geolocation)return msg("GPS nicht verfügbar.");navigator.geolocation.getCurrentPosition(async pos=>{const lat=pos.coords.latitude,lng=pos.coords.longitude;if(j.lat&&j.lng){const dist=hav(lat,lng,Number(j.lat),Number(j.lng));if(dist>Number(j.geo_radius_m||1000))return msg("Zu weit vom Einsatzort entfernt: "+Math.round(dist)+" m")}const r=await sb.from("attendance").insert({profile_id:myId(),job_id:jobId,check_in:new Date().toISOString(),clock_in:new Date().toISOString(),lat,lng,present:true});if(r.error)return msg(r.error.message);await apiPush("Mitarbeiter eingecheckt",nameOf(myId())+" bei "+j.title);startTracking(jobId);await loadAll();render()},()=>msg("GPS erlauben, sonst kein Check-in möglich."),{enableHighAccuracy:true,timeout:10000})}
-async function checkOut(){const open=state.attendance.find(a=>a.profile_id===myId()&&!a.check_out);if(!open)return msg("Kein offener Check-in.");const r=await sb.from("attendance").update({check_out:new Date().toISOString(),clock_out:new Date().toISOString()}).eq("id",open.id);if(r.error)return msg(r.error.message);stopTracking();await loadAll();render()}
+async function checkOut(){const open=state.attendance.find(a=>a.profile_id===myId()&&!a.check_out);if(!open)return msg("Kein offener Check-in.");const out=new Date().toISOString();const r=await sb.from("attendance").update({check_out:out,clock_out:out}).eq("id",open.id);if(r.error)return msg(r.error.message);await createTimesheetFromAttendance(open,out);stopTracking();await loadAll();render()}
+async function createTimesheetFromAttendance(att,outIso){
+  const inIso=att.check_in||att.clock_in;
+  if(!inIso||!outIso)return;
+  const exists=state.timesheets.some(t=>String(t.attendance_id||"")===String(att.id));
+  if(exists)return;
+  const j=jobOf(att.job_id)||{};
+  const breakMin=Number(j.default_break_minutes||0);
+  const minutes=minsBetween(inIso,outIso);
+  const hours=Math.max(0,(minutes-breakMin)/60);
+  const row={
+    profile_id:att.profile_id||myId(),
+    employee_id:att.profile_id||myId(),
+    job_id:att.job_id||null,
+    work_date:isoDate(inIso),
+    start_time:isoTime(inIso),
+    end_time:isoTime(outIso),
+    break_minutes:breakMin,
+    location:j.location||j.address||"",
+    activity:j.title||"Einsatz",
+    description:"Automatisch aus Check-in/Check-out erstellt",
+    hours_worked:hours,
+    hours:hours,
+    approved:false,
+    status:"pending",
+    attendance_id:att.id
+  };
+  await sb.from("timesheets").insert(row);
+}
+async function autoCloseExpiredAttendance(){
+  if(!admin())return;
+  const now=new Date();
+  for(const a of state.attendance.filter(x=>!x.check_out)){
+    const j=jobOf(a.job_id);
+    if(!j)continue;
+    const end=dateTimeFromJob(j,true);
+    if(end && now.getTime()>end.getTime()+15*60*1000){
+      const out=end.toISOString();
+      await sb.from("attendance").update({check_out:out,clock_out:out,auto_checkout:true}).eq("id",a.id);
+      await createTimesheetFromAttendance(a,out);
+    }
+  }
+}
+
 function startTracking(jobId){stopTracking();if(!navigator.geolocation)return;state.watchId=navigator.geolocation.watchPosition(async p=>{await sb.from("location_logs").insert({profile_id:myId(),job_id:jobId,lat:p.coords.latitude,lng:p.coords.longitude,accuracy:p.coords.accuracy})},()=>{},{enableHighAccuracy:true,maximumAge:10000,timeout:15000})}
 function stopTracking(){if(state.watchId!==null){navigator.geolocation.clearWatch(state.watchId);state.watchId=null}}
 async function saveTime(e){e.preventDefault();const f=new FormData(e.target),id=f.get("id"),pid=f.get("profile_id")||myId(),manual=Number(f.get("hours_worked")||0),auto=calcNetHours(f.get("start_time"),f.get("end_time"),f.get("break_minutes")),hrs=auto>0?auto:manual;const row={profile_id:pid,employee_id:pid,job_id:f.get("job_id")||null,work_date:f.get("work_date"),start_time:f.get("start_time"),end_time:f.get("end_time"),break_minutes:Number(f.get("break_minutes")||0),location:f.get("location"),activity:f.get("activity"),description:f.get("description"),hours_worked:hrs,hours:hrs,approved:f.get("approved")==="on",status:f.get("approved")==="on"?"approved":"pending"};const r=id?await sb.from("timesheets").update(row).eq("id",id):await sb.from("timesheets").insert(row);if(r.error)return msg(r.error.message);closeModal();await loadAll();render()}
@@ -140,9 +202,55 @@ function render(){if(!state.session){root.innerHTML=authHtml();bind();cleanUiTex
 function authHtml(){return `<div class="auth"><div class="auth-card"><h1>SXG Sicherheit & Service</h1><p>Mitarbeiterportal</p><form id="loginForm"><input name="email" placeholder="E-Mail" required><input name="password" type="password" placeholder="Passwort" required><button>Anmelden</button></form><hr><h3>Registrieren</h3><form id="regForm"><input name="name" placeholder="Name" required><input name="phone" placeholder="Telefon"><input name="email" placeholder="E-Mail" required><input name="password" type="password" placeholder="Passwort" required><button>Registrieren</button></form></div></div>`}
 function appHtml(){const ap=[["dashboard","Dashboard"],["jobs","Aufträge"],["assignments","Einsätze"],["schedule","Dienstplan"],["adminhours","Stunden Admin"],["livewage","Live-Lohn"],["tracking","Live-Tracking"],["leave","Urlaub/Krank"],["employees","Mitarbeiter"],["payroll","Lohn"],["routes","Fahrpläne"],["chat","Chat"],["profile","Profil"]],ep=[["dashboard","Dashboard"],["jobs","Offene Einsätze"],["assignments","Meine Einsätze"],["schedule","Mein Dienstplan"],["timesheets","Meine Stunden"],["leave","Mein Urlaub/Krank"],["payroll","Lohn"],["routes","Fahrpläne"],["chat","Chat"],["profile","Profil"]],pages=admin()?ap:ep;return `<div class="app"><aside class="side ${state.openSide?'open':''}"><div class="logo">SXG<small>Sicherheit & Service GmbH</small></div><div class="nav">${pages.map(p=>`<button class="${state.page===p[0]?'active':''}" onclick="setPage('${p[0]}')">${p[1]}</button>`).join("")}</div><div class="userbox"><b>${esc(state.profile.full_name)}</b><br><small>${admin()?'Admin':'Mitarbeiter'}</small><br><br><button class="secondary" onclick="askPush()">Push aktivieren</button></div></aside><main class="main"><div class="top"><button class="mobile secondary" onclick="state.openSide=!state.openSide;render()">☰</button><div><h1>${pages.find(p=>p[0]===state.page)?.[1]||"Portal"}</h1></div><button class="secondary" onclick="logout()">Abmelden</button></div>${contentHtml()}</main>${modalHtml()}</div>`}
 function contentHtml(){if(state.page==="dashboard")return dashboardHtml();if(state.page==="jobs")return jobsHtml();if(state.page==="assignments")return assignmentsHtml();if(state.page==="schedule")return scheduleHtml();if(state.page==="timesheets")return timesHtml(false);if(state.page==="adminhours")return timesHtml(true);if(state.page==="livewage")return liveWageHtml();if(state.page==="tracking")return trackingHtml();if(state.page==="leave")return leaveHtml();if(state.page==="employees")return employeesHtml();if(state.page==="payroll")return payrollHtml();if(state.page==="routes")return routesHtml();if(state.page==="chat")return chatHtml();if(state.page==="profile")return profileHtml();return""}
-function dashboardHtml(){if(admin())return `<section class="panel"><div class="toolbar"><button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button><h2>${monthKey()}</h2><button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button></div></section><div class="cards"><div class="card"><h3>Mitarbeiter</h3><h1>${state.profiles.length}</h1></div><div class="card"><h3>Aufträge</h3><h1>${state.jobs.length}</h1></div><div class="card"><h3>Monatsstunden</h3><h1>${state.timesheets.filter(t=>isInSelectedMonth(rowDate(t))).reduce((s,t)=>s+Number(t.hours_worked||t.hours||0),0).toFixed(1)}</h1></div><div class="card"><h3>Trackingpunkte</h3><h1>${state.locations.length}</h1></div></div>`;let hrs=myHours(),money=myMoney(),pct=Math.min(100,hrs/160*100);return `<section class="panel"><div class="toolbar"><button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button><h2>${monthKey()}</h2><button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button></div></section><div class="cards"><div class="card"><h3>Meine Stunden/Lohn</h3><div class="donut" style="--p:${pct}%"><div><b>${hrs.toFixed(1)} Std.</b><br>${money.toFixed(2)} €</div></div></div><div class="card"><h3>Meine Einsätze</h3><h1>${myAssignments().length}</h1></div></div>`}
-function jobsHtml(){const list=state.jobs.filter(j=>admin()||((j.status||"open")==="open"&&(!jobDate(j)||jobDate(j)>=today())));return `<section class="panel"><div class="toolbar"><h2>${admin()?'Aufträge verwalten':'Offene Einsätze'}</h2>${admin()?`<button onclick="openModal('job')">+ Auftrag</button>`:""}</div><div class="table">${list.map(j=>{let c=assignedCount(j.id),max=Number(j.needed_employees||1),full=c>=max,mine=isAssigned(j.id);return `<div class="row"><div><b>${esc(j.title)}</b><br>${esc(j.client)} · ${esc(j.location)}<br>${esc(j.address||"")}<br>${esc(jobDate(j))} ${esc(j.start_time)}-${esc(j.end_time)}<br>${admin()?`<b>Eingetragen:</b> ${state.assignments.filter(a=>String(a.job_id)===String(j.id)).map(a=>`${esc(nameOf(a.profile_id||a.employee_id))} <button class='danger' onclick="unassignJob(${j.id},'${a.profile_id||a.employee_id}')">x</button>`).join(" ")||"niemand"}`:""}</div><span>${c}/${max}</span><span class="badge ${full?'warn':'ok'}">${full?'voll':'frei'}</span><div>${admin()?`<button class="secondary" onclick="openModal('assign',${j.id})">Eintragen</button> <button class="secondary" onclick="openModal('job',${j.id})">Bearbeiten</button> <button class="danger" onclick="delJob(${j.id})">Löschen</button>`:mine?`<button class="ok" onclick="checkIn(${j.id})">Check-in</button> <button class="secondary" onclick="unassignJob(${j.id})">Austragen</button>`:`<button onclick="assignJob(${j.id})" ${full?'disabled':''}>Eintragen</button>`}</div></div>`}).join("")||`<div class="empty">Keine Einsätze</div>`}</div></section>`}
-function assignmentsHtml(){const rows=(admin()?state.assignments:myAssignments()).filter(a=>{const j=jobOf(a.job_id);return !j||!jobDate(j)||jobDate(j)>=today()});return `<section class="panel"><h2>${admin()?'Aktuelle Einsätze':'Meine Einsätze'}</h2><div class="table">${rows.map(a=>{const j=jobOf(a.job_id)||{};return `<div class="row"><div><b>${esc(j.title||"Einsatz")}</b><br>${esc(j.location||"")} · ${esc(jobDate(j))} ${esc(j.start_time)}-${esc(j.end_time)}</div><span>${admin()?esc(nameOf(a.profile_id||a.employee_id)):""}</span><span class="badge ok">aktuell</span><span></span></div>`}).join("")||`<div class="empty">Keine aktuellen Einsätze</div>`}</div></section>`}
+function dashboardHtml(){if(admin())return `<section class="panel"><div class="toolbar"><button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button><h2>${monthKey()}</h2><button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button></div></section><div class="cards"><div class="card"><h3>Mitarbeiter</h3><h1>${state.profiles.length}</h1></div><div class="card"><h3>Aufträge</h3><h1>${state.jobs.length}</h1></div><div class="card"><h3>Monatsstunden</h3><h1>${state.timesheets.filter(t=>isInSelectedMonth(rowDate(t))).reduce((s,t)=>s+Number(t.hours_worked||t.hours||0),0).toFixed(1)}</h1></div><div class="card"><h3>Trackingpunkte</h3><h1>${state.locations.length}</h1></div><div class="card"><h3>Abgeschlossene Einsätze</h3><h1>${state.assignments.filter(a=>assignmentStatus(a)==="abgeschlossen"||isJobExpired(jobOf(a.job_id)||{})).length}</h1></div></div>`;let hrs=myHours(),money=myMoney(),pct=Math.min(100,hrs/160*100);return `<section class="panel"><div class="toolbar"><button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button><h2>${monthKey()}</h2><button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button></div></section><div class="cards"><div class="card"><h3>Meine Stunden/Lohn</h3><div class="donut" style="--p:${pct}%"><div><b>${hrs.toFixed(1)} Std.</b><br>${money.toFixed(2)} €</div></div></div><div class="card"><h3>Meine Einsätze</h3><h1>${myAssignments().length}</h1></div></div>`}
+function jobsHtml(){const list=state.jobs.filter(j=>admin()||((j.status||"open")==="open"&&!isJobExpired(j)&&(!jobDate(j)||jobDate(j)>=today())));return `<section class="panel"><div class="toolbar"><h2>${admin()?'Aufträge verwalten':'Offene Einsätze'}</h2>${admin()?`<button onclick="openModal('job')">+ Auftrag</button>`:""}</div><div class="table">${list.map(j=>{let c=assignedCount(j.id),max=Number(j.needed_employees||1),full=c>=max,mine=isAssigned(j.id);return `<div class="row"><div><b>${esc(j.title)}</b><br>${esc(j.client)} · ${esc(j.location)}<br>${esc(j.address||"")}<br>${esc(jobDate(j))} ${esc(j.start_time)}-${esc(j.end_time)}<br>${admin()?`<b>Eingetragen:</b> ${state.assignments.filter(a=>String(a.job_id)===String(j.id)).map(a=>`${esc(nameOf(a.profile_id||a.employee_id))} <button class='danger' onclick="unassignJob(${j.id},'${a.profile_id||a.employee_id}')">x</button>`).join(" ")||"niemand"}`:""}</div><span>${c}/${max}</span><span class="badge ${full?'warn':'ok'}">${full?'voll':'frei'}</span><div>${admin()?`<button class="secondary" onclick="openModal('assign',${j.id})">Eintragen</button> <button class="secondary" onclick="openModal('job',${j.id})">Bearbeiten</button> <button class="danger" onclick="delJob(${j.id})">Löschen</button>`:mine?`<button class="ok" onclick="checkIn(${j.id})">Check-in</button> <button class="secondary" onclick="unassignJob(${j.id})">Austragen</button>`:`<button onclick="assignJob(${j.id})" ${full?'disabled':''}>Eintragen</button>`}</div></div>`}).join("")||`<div class="empty">Keine Einsätze</div>`}</div></section>`}
+function assignmentStatus(a){
+  const j=jobOf(a.job_id)||{}
+  const att=state.attendance.find(x=>String(x.job_id)===String(a.job_id)&&(x.profile_id===(a.profile_id||a.employee_id)))
+  if(att&&att.check_in&&!att.check_out)return "läuft"
+  if(att&&att.check_out)return "abgeschlossen"
+  if(isJobExpired(j))return "abgelaufen"
+  return "aktuell"
+}
+function assignmentTimes(a){
+  const att=state.attendance.find(x=>String(x.job_id)===String(a.job_id)&&(x.profile_id===(a.profile_id||a.employee_id)))
+  const ts=state.timesheets.find(t=>String(t.job_id)===String(a.job_id)&&(t.profile_id||t.employee_id)===(a.profile_id||a.employee_id))
+  if(att)return `${att.check_in?new Date(att.check_in).toLocaleString():""} ${att.check_out?"bis "+new Date(att.check_out).toLocaleString():""}`
+  if(ts)return `${esc(ts.work_date||"")} ${esc(ts.start_time||"")} - ${esc(ts.end_time||"")}`
+  return ""
+}
+function assignmentHours(a){
+  const ts=state.timesheets.find(t=>String(t.job_id)===String(a.job_id)&&(t.profile_id||t.employee_id)===(a.profile_id||a.employee_id))
+  return ts?Number(ts.hours_worked||ts.hours||0).toFixed(2)+" h":""
+}
+function assignmentRow(a,history=false){
+  const j=jobOf(a.job_id)||{}, status=assignmentStatus(a), pid=a.profile_id||a.employee_id
+  return `<div class="row">
+    <div>
+      <b>${esc(j.title||"Einsatz")}</b><br>
+      ${esc(j.location||"")} ${j.address?`· ${esc(j.address)}`:""}<br>
+      Plan: ${esc(jobDate(j))} ${esc(j.start_time)}-${esc(j.end_time)}<br>
+      ${assignmentTimes(a)?`Tatsächlich: ${assignmentTimes(a)}<br>`:""}
+      ${admin()?`Mitarbeiter: <b>${esc(nameOf(pid))}</b>`:""}
+    </div>
+    <span>${assignmentHours(a)}</span>
+    <span class="badge ${status==="abgeschlossen"?'ok':status==="abgelaufen"?'warn':'ok'}">${status}</span>
+    <span>${j.lat&&j.lng?`<button class="secondary" onclick="window.open('https://www.google.com/maps?q=${j.lat},${j.lng}','_blank')">Ort</button>`:""}</span>
+  </div>`
+}
+function assignmentsHtml(){
+  const baseRows=admin()?state.assignments:myAssignments()
+  const current=baseRows.filter(a=>{const j=jobOf(a.job_id);return !j||(!isJobExpired(j)&&assignmentStatus(a)!=="abgeschlossen")})
+  const history=baseRows.filter(a=>{const j=jobOf(a.job_id);return j&&(isJobExpired(j)||assignmentStatus(a)==="abgeschlossen")})
+  return `<section class="panel">
+    <h2>${admin()?'Einsätze Übersicht':'Meine Einsätze'}</h2>
+    <h3>Aktuell</h3>
+    <div class="table">${current.map(a=>assignmentRow(a,false)).join("")||`<div class="empty">Keine aktuellen Einsätze</div>`}</div>
+    <br>
+    <h3>Einsatz-Historie</h3>
+    <div class="table">${history.map(a=>assignmentRow(a,true)).join("")||`<div class="empty">Noch keine abgeschlossenen Einsätze</div>`}</div>
+  </section>`
+}
 function scheduleHtml(){const rows=admin()?state.assignments:myAssignments(),items=rows.map(a=>({a,j:jobOf(a.job_id)})).filter(x=>x.j&&jobDate(x.j)),last=new Date(state.year,state.month+1,0),days=[];for(let i=1;i<=last.getDate();i++)days.push(new Date(state.year,state.month,i).toISOString().slice(0,10));return `<section class="panel"><div class="toolbar"><button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button><h2>${state.month+1}/${state.year}</h2><button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button></div><div class="calendar">${days.map(d=>{const jobs=items.filter(x=>jobDate(x.j)===d);return `<div class="day"><b>${d.slice(8,10)}.${d.slice(5,7)}</b>${jobs.map(x=>`<span class="mini">${esc(x.j.start_time)} ${esc(x.j.title)} ${admin()?`· ${esc(nameOf(x.a.profile_id||x.a.employee_id))}`:""}</span>`).join("")}</div>`}).join("")}</div></section>`}
 function liveWageHtml(){if(!admin())return "";const employees=state.profiles.filter(p=>p.approved),totalHours=employees.reduce((s,p)=>s+employeeMonthSummary(p.id).hours,0),totalMoney=employees.reduce((s,p)=>s+employeeMonthSummary(p.id).total,0);return `<section class="panel"><div class="toolbar"><button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button><h2>Live-Lohn ${monthKey()}</h2><button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button></div><div class="cards"><div class="card"><h3>Gesamtstunden</h3><h1>${totalHours.toFixed(1)} h</h1></div><div class="card"><h3>Gesamtlohn</h3><h1>${totalMoney.toFixed(2)} €</h1></div><div class="card"><h3>Mitarbeiter</h3><h1>${employees.length}</h1></div></div><br><div class="table">${employees.map(p=>{const s=employeeMonthSummary(p.id);return `<div class="row"><div><b>${esc(p.full_name||p.email)}</b><br>Stundenlohn: ${Number(s.rate||0).toFixed(2)} €/h<br>Arbeitstage: ${s.days}</div><span>${s.hours.toFixed(1)} h</span><span><b>${s.total.toFixed(2)} €</b><br><small>Lohn ${s.wage.toFixed(2)} € + Zuschläge ${s.premium.toFixed(2)} € + Prämien ${s.bonus.toFixed(2)} €</small></span><button onclick="openModal('wagedetail','${p.id}')">Details</button></div>`}).join("")||`<div class="empty">Keine Mitarbeiter</div>`}</div></section>`}
 function trackingHtml(){if(!admin())return "";const selected=state.selectedTrack||state.profiles[0]?.id||"",logs=state.locations.filter(l=>l.profile_id===selected),latest=logs[0];return `<section class="panel"><div class="toolbar"><h2>Live-Tracking Admin</h2><select onchange="state.selectedTrack=this.value;render()">${state.profiles.map(p=>`<option value="${p.id}" ${selected===p.id?'selected':''}>${esc(p.full_name||p.email)}</option>`).join("")}</select></div><div class="cards"><div class="card"><h3>Letzte Position</h3>${latest?`<p>Lat: ${esc(latest.lat)}<br>Lng: ${esc(latest.lng)}<br>Genauigkeit: ${esc(latest.accuracy||"")} m<br>${esc(latest.created_at)}</p><button onclick="window.open('https://www.google.com/maps?q=${latest.lat},${latest.lng}','_blank')">In Maps öffnen</button>`:"Keine Position vorhanden"}</div><div class="card"><h3>Verlauf</h3>${logs.slice(0,20).map(l=>`<div class="trackpoint">${esc(l.created_at)} · ${esc(l.lat)}, ${esc(l.lng)}</div>`).join("")||"Kein Verlauf"}</div></div></section>`}
