@@ -13,7 +13,7 @@
 <script>
 const SUPABASE_URL="https://pgwsjxokhsvlziouwjsd.supabase.co";
 const SUPABASE_KEY="sb_publishable_FKpcv4cvX3e4eQg6JdLMUw_zA9kfQPx";
-const VAPID_PUBLIC_KEY="REPLACE_WITH_VAPID_PUBLIC_KEY";
+const VAPID_PUBLIC_KEY="BIhKZ71zFU8ix8qDiJ6uTwy7CPCIfuN_1UdmNgEp5kNntGdJ907YUc_1oNtrY2bOPfXKVAMV0b-2B5EHTGL1Dfk";
 const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 let state={session:null,profile:null,page:"dashboard",openSide:false,month:new Date().getMonth(),year:new Date().getFullYear(),jobs:[],profiles:[],assignments:[],timesheets:[],leaves:[],attendance:[],payslips:[],routes:[],bonuses:[],chats:[],locations:[],selectedTrack:"",modal:null,watchId:null};
 const root=document.getElementById("root");const esc=v=>String(v??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
