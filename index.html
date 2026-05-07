@@ -34,9 +34,49 @@ const jobOf=id=>state.jobs.find(j=>String(j.id)===String(id))||null;
 const today=()=>new Date().toISOString().slice(0,10);
 const jobDate=j=>j?.job_date||j?.start_date||"";
 const msg=t=>alert(t);
+
+function parseJobDateTime(j, timeValue){
+  const d=jobDate(j)||j?.start_date||"";
+  if(!d)return null;
+  const t=String(timeValue||"00:00").slice(0,5);
+  const dt=new Date(`${d}T${t}:00`);
+  return isNaN(dt.getTime())?null:dt;
+}
+function jobStartDateTime(j){return parseJobDateTime(j,j?.start_time||"00:00")}
+function jobEndDateTime(j){
+  const start=jobStartDateTime(j), end=parseJobDateTime(j,j?.end_time||"23:59");
+  if(start&&end&&end<start)end.setDate(end.getDate()+1);
+  return end;
+}
+function isJobExpired(j){
+  const end=jobEndDateTime(j);
+  if(!end)return false;
+  return Date.now() > end.getTime();
+}
+function canEmployeeCheckIn(j){
+  const start=jobStartDateTime(j), end=jobEndDateTime(j);
+  const now=Date.now();
+  if(!start||!end)return true;
+  return now <= start.getTime()+15*60*1000 && now <= end.getTime();
+}
+function checkInBlockReason(j){
+  const start=jobStartDateTime(j), end=jobEndDateTime(j);
+  const now=Date.now();
+  if(end&&now>end.getTime())return "Der Einsatz ist bereits beendet.";
+  if(start&&now>start.getTime()+15*60*1000)return "Check-in ist nur bis 15 Minuten nach Einsatzbeginn möglich. Admin kann dich nachträglich eintragen.";
+  return "";
+}
+function minsBetween(a,b){
+  const A=new Date(a).getTime(), B=new Date(b).getTime();
+  if(!A||!B||B<A)return 0;
+  return Math.max(0,(B-A)/60000);
+}
+function isoTime(x){try{return new Date(x).toTimeString().slice(0,5)}catch(e){return""}}
+function isoDate(x){try{return new Date(x).toISOString().slice(0,10)}catch(e){return today()}}
+
 let refreshTimer=null;
 function isRefreshingAllowed(){return !!state.session && !state.modal}
-function startAutoRefresh(){if(refreshTimer)return;refreshTimer=setInterval(async()=>{if(isRefreshingAllowed()){await loadAll();render()}},15000)}
+function startAutoRefresh(){if(refreshTimer)return;refreshTimer=setInterval(async()=>{if(isRefreshingAllowed()){await loadAll();render()}},10000)}
 function findAttendanceTimesheet(att){
   return state.timesheets.find(t=>String(t.attendance_id||"")===String(att.id)) ||
     state.timesheets.find(t=>String(t.job_id||"")===String(att.job_id||"") && (t.profile_id||t.employee_id)===(att.profile_id||att.employee_id) && String(t.work_date||"")===isoDate(att.check_in||att.clock_in))
@@ -197,7 +237,27 @@ async function saveJob(e){e.preventDefault();const f=new FormData(e.target),id=f
 async function delJob(id){if(confirm("Auftrag löschen?")){const r=await sb.from("jobs").delete().eq("id",id);if(r.error)return msg(r.error.message);await loadAll();render()}}
 async function assignJob(id,pid=myId()){const j=jobOf(id);if(assignedCount(id)>=Number(j.needed_employees||1))return msg("Dieser Einsatz ist voll.");if(state.assignments.some(a=>String(a.job_id)===String(id)&&(a.profile_id===pid||a.employee_id===pid)))return msg("Schon eingetragen.");const r=await sb.from("job_assignments").insert({job_id:id,employee_id:pid,profile_id:pid});if(r.error)return msg(r.error.message);await apiPush("Einsatz eingetragen",j.title,[pid]);await loadAll();render()}
 async function unassignJob(id,pid=myId()){const row=state.assignments.find(a=>String(a.job_id)===String(id)&&(a.profile_id===pid||a.employee_id===pid));if(!row)return;const r=await sb.from("job_assignments").delete().eq("id",row.id);if(r.error)return msg(r.error.message);await loadAll();render()}
-async function checkIn(jobId){const j=jobOf(jobId);if(!navigator.geolocation)return msg("GPS nicht verfügbar.");navigator.geolocation.getCurrentPosition(async pos=>{const lat=pos.coords.latitude,lng=pos.coords.longitude;if(j.lat&&j.lng){const dist=hav(lat,lng,Number(j.lat),Number(j.lng));if(dist>Number(j.geo_radius_m||1000))return msg("Zu weit vom Einsatzort entfernt: "+Math.round(dist)+" m")}const r=await sb.from("attendance").insert({profile_id:myId(),job_id:jobId,check_in:new Date().toISOString(),clock_in:new Date().toISOString(),lat,lng,present:true});if(r.error)return msg(r.error.message);await apiPush("Mitarbeiter eingecheckt",nameOf(myId())+" bei "+j.title);startTracking(jobId);await loadAll();render()},()=>msg("GPS erlauben, sonst kein Check-in möglich."),{enableHighAccuracy:true,timeout:10000})}
+async function checkIn(jobId){
+  const j=jobOf(jobId);
+  if(!j)return msg("Einsatz nicht gefunden.");
+  const reason=checkInBlockReason(j);
+  if(reason)return msg(reason);
+  if(!navigator.geolocation)return msg("GPS nicht verfügbar.");
+  navigator.geolocation.getCurrentPosition(async pos=>{
+    const lat=pos.coords.latitude,lng=pos.coords.longitude;
+    if(j.lat&&j.lng){
+      const dist=hav(lat,lng,Number(j.lat),Number(j.lng));
+      if(dist>Number(j.geo_radius_m||1000))return msg("Zu weit vom Einsatzort entfernt: "+Math.round(dist)+" m");
+    }
+    const now=new Date().toISOString();
+    const r=await sb.from("attendance").insert({profile_id:myId(),employee_id:myId(),job_id:jobId,check_in:now,clock_in:now,lat,lng,present:true});
+    if(r.error)return msg(r.error.message);
+    await apiPush("Mitarbeiter eingecheckt",nameOf(myId())+" bei "+j.title);
+    startTracking(jobId);
+    await loadAll();
+    render();
+  },()=>msg("GPS erlauben, sonst kein Check-in möglich."),{enableHighAccuracy:true,timeout:10000})
+}
 async function checkOut(){
   await loadAll();
   const open=state.attendance.find(a=>a.profile_id===myId()&&!a.check_out);
@@ -214,13 +274,30 @@ async function checkOut(){
 async function createTimesheetFromAttendance(att,outIso){
   const inIso=att.check_in||att.clock_in;
   if(!inIso||!outIso)return;
-  const old=findAttendanceTimesheet(att);
+  const old=findAttendanceTimesheet?findAttendanceTimesheet(att):state.timesheets.find(t=>String(t.attendance_id||"")===String(att.id));
   const j=jobOf(att.job_id)||{};
   const breakMin=Number(j.default_break_minutes||0);
   const minutes=minsBetween(inIso,outIso);
-  const hours=Math.max(0,(minutes-breakMin)/60);
-  const row={profile_id:att.profile_id||myId(),employee_id:att.profile_id||myId(),job_id:att.job_id||null,work_date:isoDate(inIso),start_time:isoTime(inIso),end_time:isoTime(outIso),break_minutes:breakMin,location:j.location||j.address||"",activity:j.title||"Einsatz",description:"Automatisch aus Check-in/Check-out erstellt",hours_worked:hours,hours:hours,approved:false,status:"pending",attendance_id:att.id};
-  if(old){await sb.from("timesheets").update(row).eq("id",old.id)}else{await sb.from("timesheets").insert(row)}
+  const hours=Math.max(0,Math.round(((minutes-breakMin)/60)*10000)/10000);
+  const row={
+    profile_id:att.profile_id||myId(),
+    employee_id:att.profile_id||myId(),
+    job_id:att.job_id||null,
+    work_date:isoDate(inIso),
+    start_time:isoTime(inIso),
+    end_time:isoTime(outIso),
+    break_minutes:breakMin,
+    location:j.location||j.address||"",
+    activity:j.title||"Einsatz",
+    description:"Automatisch aus Check-in/Check-out erstellt",
+    hours_worked:hours,
+    hours:hours,
+    approved:false,
+    status:"pending",
+    attendance_id:att.id
+  };
+  if(old){await sb.from("timesheets").update(row).eq("id",old.id)}
+  else{await sb.from("timesheets").insert(row)}
 }
 function startTracking(jobId){stopTracking();if(!navigator.geolocation)return;state.watchId=navigator.geolocation.watchPosition(async p=>{await sb.from("location_logs").insert({profile_id:myId(),job_id:jobId,lat:p.coords.latitude,lng:p.coords.longitude,accuracy:p.coords.accuracy})},()=>{},{enableHighAccuracy:true,maximumAge:10000,timeout:15000})}
 function stopTracking(){if(state.watchId!==null){navigator.geolocation.clearWatch(state.watchId);state.watchId=null}}
@@ -277,7 +354,7 @@ function authHtml(){return `<div class="auth"><div class="auth-card"><h1>SXG Sic
 function appHtml(){const ap=[["dashboard","Dashboard"],["jobs","Aufträge"],["assignments","Einsätze"],["schedule","Dienstplan"],["adminhours","Stunden Admin"],["livewage","Live-Lohn"],["tracking","Live-Tracking"],["maps","Karten"],["leave","Urlaub/Krank"],["employees","Mitarbeiter"],["payroll","Lohn"],["routes","Fahrpläne"],["chat","Chat"],["profile","Profil"]],ep=[["dashboard","Dashboard"],["jobs","Offene Einsätze"],["assignments","Meine Einsätze"],["schedule","Mein Dienstplan"],["timesheets","Meine Stunden"],["leave","Mein Urlaub/Krank"],["payroll","Lohn"],["routes","Fahrpläne"],["chat","Chat"],["profile","Profil"]],pages=admin()?ap:ep;return `<div class="app"><aside class="side ${state.openSide?'open':''}"><div class="logo">SXG<small>Sicherheit & Service GmbH</small></div><div class="nav">${pages.map(p=>`<button class="${state.page===p[0]?'active':''}" onclick="setPage('${p[0]}')">${p[1]}</button>`).join("")}</div><div class="userbox"><b>${esc(state.profile.full_name)}</b><br><small>${admin()?'Admin':'Mitarbeiter'}</small><br><br><button class="secondary" onclick="askPush()">Push aktivieren</button></div></aside><main class="main"><div class="top"><button class="mobile secondary" onclick="state.openSide=!state.openSide;render()">☰</button><div><h1>${pages.find(p=>p[0]===state.page)?.[1]||"Portal"}</h1></div><button class="secondary" onclick="refreshPortal()">Aktualisieren</button><button class="secondary" onclick="logout()">Abmelden</button></div>${contentHtml()}</main>${modalHtml()}</div>`}
 function contentHtml(){if(state.page==="dashboard")return dashboardHtml();if(state.page==="jobs")return jobsHtml();if(state.page==="assignments")return assignmentsHtml();if(state.page==="schedule")return scheduleHtml();if(state.page==="timesheets")return timesHtml(false);if(state.page==="adminhours")return timesHtml(true);if(state.page==="livewage")return liveWageHtml();if(state.page==="tracking")return trackingHtml();if(state.page==="maps")return mapsHtml();if(state.page==="leave")return leaveHtml();if(state.page==="employees")return employeesHtml();if(state.page==="payroll")return payrollHtml();if(state.page==="routes")return routesHtml();if(state.page==="chat")return chatHtml();if(state.page==="profile")return profileHtml();return""}
 function dashboardHtml(){if(admin())return `<section class="panel"><div class="toolbar"><button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button><h2>${monthKey()}</h2><button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button></div></section><div class="cards"><div class="card"><h3>Mitarbeiter</h3><h1>${state.profiles.length}</h1></div><div class="card"><h3>Aufträge</h3><h1>${state.jobs.length}</h1></div><div class="card"><h3>Monatsstunden</h3><h1>${state.timesheets.filter(t=>isInSelectedMonth(rowDate(t))).reduce((s,t)=>s+Number(t.hours_worked||t.hours||0),0).toFixed(1)}</h1></div><div class="card"><h3>Trackingpunkte</h3><h1>${state.locations.length}</h1></div><div class="card"><h3>Abgeschlossene Einsätze</h3><h1>${state.assignments.filter(a=>assignmentStatus(a)==="abgeschlossen"||isJobExpired(jobOf(a.job_id)||{})).length}</h1></div></div>`;let hrs=myHours(),money=myMoney(),pct=Math.min(100,hrs/160*100);return `<section class="panel"><div class="toolbar"><button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button><h2>${monthKey()}</h2><button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button></div></section><div class="cards"><div class="card"><h3>Meine Stunden/Lohn</h3><div class="donut" style="--p:${pct}%"><div><b>${hrs.toFixed(1)} Std.</b><br>${money.toFixed(2)} €</div></div></div><div class="card"><h3>Meine Einsätze</h3><h1>${myAssignments().length}</h1></div></div>`}
-function jobsHtml(){const list=state.jobs.filter(j=>admin()||((j.status||"open")==="open"&&!isJobExpired(j)&&(!jobDate(j)||jobDate(j)>=today())));return `<section class="panel"><div class="toolbar"><h2>${admin()?'Aufträge verwalten':'Offene Einsätze'}</h2>${admin()?`<button onclick="openModal('job')">+ Auftrag</button> <button onclick="openModal('repeat')">Wiederholen</button>`:""}</div><div class="table">${list.map(j=>{let c=assignedCount(j.id),max=Number(j.needed_employees||1),full=c>=max,mine=isAssigned(j.id);return `<div class="row"><div><b>${esc(j.title)}</b><br>${esc(j.client)} · ${esc(j.location)}<br>${esc(j.address||"")}<br>${esc(jobDate(j))} ${esc(j.start_time)}-${esc(j.end_time)}<br>${admin()?`<b>Eingetragen:</b> ${state.assignments.filter(a=>String(a.job_id)===String(j.id)).map(a=>`${esc(nameOf(a.profile_id||a.employee_id))} <button class='danger' onclick="unassignJob(${j.id},'${a.profile_id||a.employee_id}')">x</button>`).join(" ")||"niemand"}<br><b>Reserve:</b> ${state.waitlist.filter(w=>String(w.job_id)===String(j.id)).map(w=>`${esc(nameOf(w.profile_id))} <button class='secondary' onclick="promoteWaitlist(${j.id},'${w.profile_id}')">einsetzen</button>`).join(" ")||"niemand"}`:""}</div><span>${c}/${max}</span><span class="badge ${full?'warn':'ok'}">${full?'voll':'frei'}</span><div>${admin()?`<button class="secondary" onclick="openModal('assign',${j.id})">Eintragen</button> <button class="secondary" onclick="openJobMapById(${j.id})">Karte</button> <button class="secondary" onclick="openModal('job',${j.id})">Bearbeiten</button> <button class="danger" onclick="delJob(${j.id})">Löschen</button>`:mine?`<button class="ok" onclick="checkIn(${j.id})">Check-in</button> <button class="secondary" onclick="unassignJob(${j.id})">Austragen</button>`:`<button onclick="assignJob(${j.id})" ${full?'disabled':''}>Eintragen</button> ${full?(isWaitlisted(j.id)?`<button class="secondary" onclick="removeWaitlist(${j.id})">Reserve entfernen</button>`:`<button class="secondary" onclick="joinWaitlist(${j.id})">Reserve</button>`):``}`}</div></div>`}).join("")||`<div class="empty">Keine Einsätze</div>`}</div></section>`}
+function jobsHtml(){const list=state.jobs.filter(j=>admin()||((j.status||"open")==="open"&&!isJobExpired(j)&&(!jobDate(j)||jobDate(j)>=today())));return `<section class="panel"><div class="toolbar"><h2>${admin()?'Aufträge verwalten':'Offene Einsätze'}</h2>${admin()?`<button onclick="openModal('job')">+ Auftrag</button> <button onclick="openModal('repeat')">Wiederholen</button>`:""}</div><div class="table">${list.map(j=>{let c=assignedCount(j.id),max=Number(j.needed_employees||1),full=c>=max,mine=isAssigned(j.id);return `<div class="row"><div><b>${esc(j.title)}</b><br>${esc(j.client)} · ${esc(j.location)}<br>${esc(j.address||"")}<br>${esc(jobDate(j))} ${esc(j.start_time)}-${esc(j.end_time)}<br>${!admin()&&checkInBlockReason(j)?`<small>${esc(checkInBlockReason(j))}</small><br>`:""}${admin()?`<b>Eingetragen:</b> ${state.assignments.filter(a=>String(a.job_id)===String(j.id)).map(a=>`${esc(nameOf(a.profile_id||a.employee_id))} <button class='danger' onclick="unassignJob(${j.id},'${a.profile_id||a.employee_id}')">x</button>`).join(" ")||"niemand"}<br><b>Reserve:</b> ${state.waitlist.filter(w=>String(w.job_id)===String(j.id)).map(w=>`${esc(nameOf(w.profile_id))} <button class='secondary' onclick="promoteWaitlist(${j.id},'${w.profile_id}')">einsetzen</button>`).join(" ")||"niemand"}`:""}</div><span>${c}/${max}</span><span class="badge ${full?'warn':'ok'}">${full?'voll':'frei'}</span><div>${admin()?`<button class="secondary" onclick="openModal('assign',${j.id})">Eintragen</button> <button class="secondary" onclick="openJobMapById(${j.id})">Karte</button> <button class="secondary" onclick="openModal('job',${j.id})">Bearbeiten</button> <button class="danger" onclick="delJob(${j.id})">Löschen</button>`:mine?`<button class="ok" onclick="checkIn(${j.id})" ${canEmployeeCheckIn(j)?"":"disabled"}>Check-in</button> <button class="secondary" onclick="unassignJob(${j.id})">Austragen</button>`:`<button onclick="assignJob(${j.id})" ${full?'disabled':''}>Eintragen</button> ${full?(isWaitlisted(j.id)?`<button class="secondary" onclick="removeWaitlist(${j.id})">Reserve entfernen</button>`:`<button class="secondary" onclick="joinWaitlist(${j.id})">Reserve</button>`):``}`}</div></div>`}).join("")||`<div class="empty">Keine Einsätze</div>`}</div></section>`}
 function assignmentStatus(a){
   const j=jobOf(a.job_id)||{}
   const att=state.attendance.find(x=>String(x.job_id)===String(a.job_id)&&(x.profile_id===(a.profile_id||a.employee_id)))
@@ -303,7 +380,7 @@ function assignmentRow(a,history=false){
     <div>
       <b>${esc(j.title||"Einsatz")}</b><br>
       ${esc(j.location||"")} ${j.address?`· ${esc(j.address)}`:""}<br>
-      Plan: ${esc(jobDate(j))} ${esc(j.start_time)}-${esc(j.end_time)}<br>
+      Plan: ${esc(jobDate(j))} ${esc(j.start_time)}-${esc(j.end_time)}<br>${!admin()&&checkInBlockReason(j)?`<small>${esc(checkInBlockReason(j))}</small><br>`:""}
       ${assignmentTimes(a)?`Tatsächlich: ${assignmentTimes(a)}<br>`:""}
       ${admin()?`Mitarbeiter: <b>${esc(nameOf(pid))}</b>`:""}
     </div>
