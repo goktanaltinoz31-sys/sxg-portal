@@ -4,5 +4,8 @@
   "version": "1.0.0",
   "scripts": {
     "build": "echo build-ok"
+  },
+  "dependencies": {
+    "web-push": "^3.6.7"
   }
 }
