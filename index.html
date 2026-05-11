@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>SXG Mitarbeiterportal</title>
+<title>SXG Mitarbeiterportal v8.1</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root{--bg:#f4f5f7;--line:#e5e7eb;--muted:#6b7280}
@@ -15,6 +15,9 @@
 <body>
 <div id="root"><div class="auth"><div class="auth-card"><h1>SXG lädt...</h1><p>Portal wird gestartet.</p></div></div></div>
 <script>
+window.SXG_VERSION="v8.1-cache-fix";
+console.log("SXG Portal Version", window.SXG_VERSION);
+
 window.addEventListener("error",e=>{document.getElementById("root").innerHTML='<div class="error"><b>Portal-Fehler:</b>\\n'+String(e.message)+'\\n\\nDatei/Zeile: '+String(e.filename)+' : '+String(e.lineno)+'</div>'})
 window.addEventListener("unhandledrejection",e=>{document.getElementById("root").innerHTML='<div class="error"><b>Portal-Fehler:</b>\\n'+String(e.reason?.message||e.reason)+'</div>'})
 </script>
