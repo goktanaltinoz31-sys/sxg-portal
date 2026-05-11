@@ -2367,6 +2367,112 @@ window.leaveHtml = function(){
   };
 })();
 
+
+/* SXG v14 Excel Listen Generator */
+(function(){
+  function pidOf(x){return x?.profile_id||x?.employee_id||x?.user_id||""}
+  function assignedProfiles(jobId){
+    return state.assignments.filter(a=>String(a.job_id)===String(jobId)).map(a=>state.profiles.find(p=>p.id===pidOf(a))).filter(Boolean);
+  }
+  async function loadExcelFiles(){
+    try{
+      const r=await sb.from("job_excel_files").select("*").order("created_at",{ascending:false});
+      state.job_excel_files=r.data||[];
+    }catch(e){state.job_excel_files=[]}
+  }
+  const oldLoadAll=loadAll;
+  loadAll=window.loadAll=async function(){await oldLoadAll();await loadExcelFiles()};
+
+  window.uploadJobExcel=async function(jobId){
+    const inp=document.createElement("input");
+    inp.type="file";inp.accept=".xlsx,.xls";
+    inp.onchange=async()=>{
+      const file=inp.files[0]; if(!file)return;
+      const path=`job-${jobId}/template-${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
+      const up=await sb.storage.from("job-excel").upload(path,file,{upsert:false});
+      if(up.error)return msg(up.error.message);
+      const r=await sb.from("job_excel_files").insert({job_id:jobId,uploaded_by:myId(),template_path:path,template_name:file.name,status:"template"});
+      if(r.error)return msg(r.error.message);
+      await loadAll();render();
+    };
+    inp.click();
+  };
+
+  window.generateJobExcel=async function(jobId,fileId){
+    await loadAll();
+    const job=jobOf(jobId);
+    const file=state.job_excel_files.find(f=>String(f.id)===String(fileId))||state.job_excel_files.find(f=>String(f.job_id)===String(jobId));
+    if(!file)return msg("Bitte zuerst Kunden-Excel hochladen.");
+    const employees=assignedProfiles(jobId).map(p=>({
+      full_name:p.full_name||p.email||"",
+      email:p.email||"",
+      phone:p.phone||"",
+      guard_id:p.guard_id||"",
+      epin:p.epin||p.e_pin||"",
+      tax_id:p.tax_id||"",
+      qualification:p.qualification||""
+    }));
+    const res=await fetch("/api/fill-excel",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({jobId,fileId:file.id,templatePath:file.template_path,templateName:file.template_name,employees,job:{title:job?.title,client:job?.client,location:job?.location,address:job?.address,job_date:jobDate(job),start_time:job?.start_time,end_time:job?.end_time}})});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok)return msg(data.error||"Excel konnte nicht erstellt werden.");
+    await sb.from("job_excel_files").update({generated_path:data.generatedPath,generated_name:data.generatedName,status:"generated",generated_at:new Date().toISOString()}).eq("id",file.id);
+    await loadAll();render();msg("Excel wurde erstellt.");
+  };
+
+  window.openJobExcel=async function(path){
+    const r=await sb.storage.from("job-excel").createSignedUrl(path,3600);
+    if(r.error)return msg(r.error.message);
+    window.open(r.data.signedUrl,"_blank");
+  };
+  window.delJobExcel=async function(id){
+    const f=state.job_excel_files.find(x=>String(x.id)===String(id));
+    if(!f||!confirm("Excel-Datei löschen?"))return;
+    const paths=[f.template_path,f.generated_path].filter(Boolean);
+    if(paths.length)await sb.storage.from("job-excel").remove(paths);
+    const r=await sb.from("job_excel_files").delete().eq("id",id);
+    if(r.error)return msg(r.error.message);
+    await loadAll();render();
+  };
+  window.jobExcelHtml=function(jobId){
+    if(!admin())return "";
+    const rows=(state.job_excel_files||[]).filter(f=>String(f.job_id)===String(jobId));
+    return `<div style="margin-top:10px"><b>Kunden-Excel:</b><br>${rows.map(f=>`<div style="margin:6px 0"><button class="secondary" onclick="openJobExcel('${String(f.template_path).replace(/'/g,"\\'")}')">Vorlage: ${esc(f.template_name||"Excel")}</button> <button onclick="generateJobExcel(${jobId},${f.id})">Generieren</button> ${f.generated_path?`<button class="ok" onclick="openJobExcel('${String(f.generated_path).replace(/'/g,"\\'")}')">Fertige Excel herunterladen</button>`:""} <button class="danger" onclick="delJobExcel(${f.id})">Löschen</button></div>`).join("")||"<small>Keine Excel hinterlegt</small>"} <button onclick="uploadJobExcel(${jobId})">+ Kunden-Excel hochladen</button></div>`;
+  };
+
+  const oldJobsHtml=jobsHtml;
+  jobsHtml=window.jobsHtml=function(){
+    let out=oldJobsHtml();
+    if(out.includes("jobImagesHtml(j.id)")||out.includes("Kunden-Excel:")) return out;
+    return out;
+  };
+
+  const prevJobsHtml = jobsHtml;
+  jobsHtml=window.jobsHtml=function(){
+    const fp=state.adminEmployeeFilter||"";
+    const dateF=state.dateFilter||{from:"",to:""};
+    const inRange=d=>!d||((!dateF.from||String(d).slice(0,10)>=dateF.from)&&(!dateF.to||String(d).slice(0,10)<=dateF.to));
+    let list=state.jobs.filter(j=>inRange(jobDate(j)||j.job_date||j.start_date)&&(admin()||((j.status||"open")==="open")));
+    if(admin()&&fp){
+      const ids=new Set([...state.assignments.filter(a=>pidOf(a)===fp).map(a=>String(a.job_id)),...state.timesheets.filter(t=>pidOf(t)===fp&&t.job_id).map(t=>String(t.job_id))]);
+      list=list.filter(j=>ids.has(String(j.id)));
+    }
+    const dateFilter=`<section class="panel"><div class="toolbar"><h3>Datum filtern</h3><input type="date" value="${esc(dateF.from||"")}" onchange="state.dateFilter=state.dateFilter||{};state.dateFilter.from=this.value;render()"><input type="date" value="${esc(dateF.to||"")}" onchange="state.dateFilter=state.dateFilter||{};state.dateFilter.to=this.value;render()"><button class="secondary" onclick="state.dateFilter={from:'',to:''};render()">Datum löschen</button></div></section>`;
+    const empFilter=admin()?`<section class="panel"><div class="toolbar"><h3>Mitarbeiter filtern</h3><select onchange="state.adminEmployeeFilter=this.value;render()"><option value="">Alle Mitarbeiter</option>${state.profiles.map(p=>`<option value="${p.id}" ${fp===p.id?"selected":""}>${esc(p.full_name||p.email)}</option>`).join("")}</select></div></section>`:"";
+    return `${empFilter}${dateFilter}<section class="panel"><div class="toolbar"><h2>${admin()?'Aufträge verwalten':'Offene Einsätze'}</h2>${admin()?`<button onclick="openModal('job')">+ Auftrag</button> <button onclick="openModal('repeat')">Wiederholen</button>`:""}</div><div class="table">${list.map(j=>{const c=assignedCount(j.id),max=Number(j.needed_employees||1),full=c>=max,mine=isAssigned(j.id),open=(window.sxgOpenAttendance?window.sxgOpenAttendance(myId(),j.id):null);return `<div class="row"><div><b>${esc(j.title)}</b><br>${esc(j.client||"")} · ${esc(j.location||"")}<br>${esc(j.address||"")}<br>${esc(jobDate(j)||j.job_date||"")} ${esc(j.start_time||"")}-${esc(j.end_time||"")}<br>${admin()?`<b>Eingetragen:</b> ${state.assignments.filter(a=>String(a.job_id)===String(j.id)).map(a=>`${esc(nameOf(pidOf(a)))} <button class='danger' onclick="unassignJob(${j.id},'${pidOf(a)}')">x</button>`).join(" ")||"niemand"}`:""}${window.jobImagesHtml?jobImagesHtml(j.id):""}${jobExcelHtml(j.id)}</div><span>${c}/${max}</span><span class="badge ${full?'warn':'ok'}">${full?'voll':'frei'}</span><div>${admin()?`<button class="secondary" onclick="openModal('assign',${j.id})">Eintragen</button> <button class="secondary" onclick="openModal('job',${j.id})">Bearbeiten</button> <button class="secondary" onclick="openModal('jobVisibility',${j.id})">Sichtbarkeit</button> <button class="secondary" onclick="openModal('jobMessage',${j.id})">Senden</button> <button class="danger" onclick="delJob(${j.id})">Löschen</button>`:open?`<button class="ok" onclick="checkOut()">Check-out</button>`:mine?`<button class="ok" onclick="checkIn(${j.id})">Check-in</button> <button class="secondary" onclick="unassignJob(${j.id})">Austragen</button>`:`<button onclick="assignJob(${j.id})" ${full?'disabled':''}>Eintragen</button>`}</div></div>`}).join("")||`<div class="empty">Keine Einsätze</div>`}</div></section>`;
+  };
+
+  const oldModal=modalHtml;
+  modalHtml=window.modalHtml=function(){
+    if(!state.modal)return "";
+    const {type,id}=state.modal;
+    if(type==="profile"){
+      const p=state.profiles.find(x=>x.id===id)||{};
+      return modal("Profil",`<form class="form" id="profileForm"><input type="hidden" name="id" value="${esc(p.id||"")}"><input name="full_name" placeholder="Name" value="${esc(p.full_name||"")}" ${admin()?"":"readonly"}><input name="phone" placeholder="Telefon" value="${esc(p.phone||"")}"><input name="role" value="${esc(p.role||"employee")}" ${admin()?"":"readonly"}><input name="hourly_rate" type="number" step="0.01" placeholder="Stundenlohn" value="${esc(p.hourly_rate||0)}" ${admin()?"":"readonly"}><input name="guard_id" placeholder="Bewacher-ID" value="${esc(p.guard_id||"")}" ${admin()?"":"readonly"}><input name="epin" placeholder="E-PIN" value="${esc(p.epin||p.e_pin||"")}" ${admin()?"":"readonly"}><input name="tax_id" placeholder="Steuer-ID" value="${esc(p.tax_id||"")}" ${admin()?"":"readonly"}><input name="address" placeholder="Adresse" value="${esc(p.address||"")}"><input name="emergency_contact" placeholder="Notfallkontakt" value="${esc(p.emergency_contact||"")}"><input name="qualification" placeholder="Qualifikation" value="${esc(p.qualification||"")}"><input name="iban" placeholder="IBAN" value="${esc(p.iban||"")}">${admin()?`<label class="full"><input type="checkbox" name="approved" ${p.approved?"checked":""}> freigegeben</label>`:""}<button>Speichern</button></form>`);
+    }
+    return oldModal();
+  };
+})();
+
 init();
 }catch(e){document.getElementById("root").innerHTML='<div class="error"><b>Startfehler:</b>\\n'+String(e.message)+'</div>'}
 </script>
