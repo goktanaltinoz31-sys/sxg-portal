@@ -15,7 +15,7 @@
 <body>
 <div id="root"><div class="auth"><div class="auth-card"><h1>SXG lädt...</h1><p>Portal wird gestartet.</p></div></div></div>
 <script>
-window.SXG_VERSION="v8.1-cache-fix";
+window.SXG_VERSION="v10.4-admin-employee-filter-final";
 console.log("SXG Portal Version", window.SXG_VERSION);
 
 window.addEventListener("error",e=>{document.getElementById("root").innerHTML='<div class="error"><b>Portal-Fehler:</b>\\n'+String(e.message)+'\\n\\nDatei/Zeile: '+String(e.filename)+' : '+String(e.lineno)+'</div>'})
@@ -1148,6 +1148,414 @@ window.liveWageHtml = function(){
 
 const sxgOldRefreshPortal = window.refreshPortal;
 window.refreshPortal = async function(){await window.sxgSafeRefresh();};
+
+
+/* SXG v10.3 GPS/Address Fix */
+window.sxgGeocodeAddress = window.sxgGeocodeAddress || async function(address){
+  if(!address)return null;
+  try{
+    const q = address.includes(",") ? address : address + ", Deutschland";
+    const r=await fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&q="+encodeURIComponent(q),{headers:{"Accept":"application/json"}});
+    const d=await r.json();
+    if(d&&d[0])return {lat:Number(d[0].lat),lng:Number(d[0].lon)};
+  }catch(e){}
+  return null;
+};
+
+window.sxgOpenAttendance = window.sxgOpenAttendance || function(pid,jobId=null){
+  return state.attendance.find(a=>(a.profile_id||a.employee_id)===pid&&!a.check_out&&!a.clock_out&&(!jobId||String(a.job_id)===String(jobId)));
+};
+
+window.checkIn = async function(jobId){
+  await loadAll();
+  const j=jobOf(jobId);
+  if(!j)return msg("Einsatz nicht gefunden.");
+
+  if(window.sxgOpenAttendance(myId()))return msg("Du bist bereits eingecheckt. Bitte erst auschecken.");
+  if(!navigator.geolocation)return msg("GPS nicht verfügbar.");
+
+  // Zeitfenster prüfen
+  try{
+    const d=jobDate(j)||j.start_date;
+    if(d){
+      const start=new Date(`${d}T${String(j.start_time||"00:00").slice(0,5)}:00`);
+      const end=new Date(`${d}T${String(j.end_time||"23:59").slice(0,5)}:00`);
+      if(end<start)end.setDate(end.getDate()+1);
+      const now=Date.now();
+      if(now>end.getTime())return msg("Der Einsatz ist bereits beendet.");
+      if(now>start.getTime()+15*60*1000)return msg("Check-in ist nur bis 15 Minuten nach Beginn möglich. Admin kann dich nachträglich einchecken.");
+    }
+  }catch(e){}
+
+  let gpsActive = j.require_location_tracking !== false && j.require_location_tracking !== "false";
+
+  // Falls GPS aktiv ist, aber Koordinaten fehlen: Adresse automatisch suchen und im Auftrag speichern
+  if(gpsActive && (!j.lat || !j.lng)){
+    const address=[j.address,j.location,j.client].filter(Boolean).join(", ");
+    const g=await window.sxgGeocodeAddress(address);
+    if(g){
+      j.lat=g.lat; j.lng=g.lng;
+      await sb.from("jobs").update({lat:g.lat,lng:g.lng}).eq("id",j.id);
+    }else{
+      return msg("Adresse konnte nicht gefunden werden. Bitte beim Auftrag vollständige Adresse eintragen, z.B. Straße Hausnummer, PLZ Ort, oder GPS/Radius im Auftrag deaktivieren.");
+    }
+  }
+
+  navigator.geolocation.getCurrentPosition(async pos=>{
+    const lat=pos.coords.latitude,lng=pos.coords.longitude;
+
+    if(gpsActive){
+      const dist=hav(lat,lng,Number(j.lat),Number(j.lng));
+      const radius=Number(j.geo_radius_m||1000);
+      if(dist>radius)return msg("Du bist zu weit vom Einsatzort entfernt. Entfernung: "+Math.round(dist)+" m / erlaubt: "+radius+" m");
+    }
+
+    const iso=new Date().toISOString();
+    const r=await sb.from("attendance").insert({
+      profile_id:myId(),
+      employee_id:myId(),
+      job_id:jobId,
+      check_in:iso,
+      clock_in:iso,
+      lat,lng,
+      present:true
+    });
+
+    if(r.error){
+      if(String(r.error.message).includes("duplicate")||String(r.error.message).includes("unique"))return msg("Du bist bereits eingecheckt.");
+      return msg(r.error.message);
+    }
+
+    startTracking(jobId);
+    await loadAll();
+    render();
+  },()=>msg("GPS am Handy/Browser erlauben, sonst kein Check-in möglich."),{enableHighAccuracy:true,timeout:12000,maximumAge:0});
+};
+
+
+/* SXG v10.4 FINAL ADMIN EMPLOYEE FILTER */
+window.sxgPid = function(x){return x?.profile_id||x?.employee_id||""};
+
+window.sxgFilterPid = function(){
+  if(!state.adminEmployeeFilter) state.adminEmployeeFilter="";
+  return state.adminEmployeeFilter;
+};
+
+window.sxgEmployeeFilterBar = function(title="Mitarbeiter auswählen"){
+  if(!admin()) return "";
+  return `<section class="panel">
+    <div class="toolbar">
+      <h3>${esc(title)}</h3>
+      <select onchange="state.adminEmployeeFilter=this.value;render()">
+        <option value="">Alle Mitarbeiter</option>
+        ${state.profiles.map(p=>`<option value="${p.id}" ${state.adminEmployeeFilter===p.id?"selected":""}>${esc(p.full_name||p.email)}</option>`).join("")}
+      </select>
+      ${state.adminEmployeeFilter?`<button class="secondary" onclick="state.adminEmployeeFilter='';render()">Filter löschen</button>`:""}
+    </div>
+  </section>`;
+};
+
+window.sxgFilteredAssignments = function(){
+  let rows = admin() ? state.assignments : myAssignments();
+  const pid = window.sxgFilterPid();
+  if(admin() && pid) rows = rows.filter(a=>window.sxgPid(a)===pid);
+  return rows;
+};
+
+window.sxgFilteredTimes = function(){
+  let rows = admin() ? state.timesheets : myTimes();
+  const pid = window.sxgFilterPid();
+  if(admin() && pid) rows = rows.filter(t=>window.sxgPid(t)===pid);
+  return rows;
+};
+
+window.sxgOpenAttendance = window.sxgOpenAttendance || function(pid,jobId=null){
+  return state.attendance.find(a=>window.sxgPid(a)===pid&&!a.check_out&&!a.clock_out&&(!jobId||String(a.job_id)===String(jobId)));
+};
+
+window.sxgJobStart = window.sxgJobStart || function(j){
+  const d=jobDate(j)||j?.start_date||"";
+  if(!d)return null;
+  const dt=new Date(`${d}T${String(j?.start_time||"00:00").slice(0,5)}:00`);
+  return isNaN(dt.getTime())?null:dt;
+};
+
+window.sxgJobEnd = window.sxgJobEnd || function(j){
+  const d=jobDate(j)||j?.start_date||"";
+  if(!d)return null;
+  const dt=new Date(`${d}T${String(j?.end_time||"23:59").slice(0,5)}:00`);
+  const st=window.sxgJobStart(j);
+  if(st&&dt<st)dt.setDate(dt.getDate()+1);
+  return isNaN(dt.getTime())?null:dt;
+};
+
+window.sxgJobExpired = window.sxgJobExpired || function(j){
+  const e=window.sxgJobEnd(j);
+  return !!e && Date.now()>e.getTime();
+};
+
+window.jobsHtml = function(){
+  const selectedPid = window.sxgFilterPid();
+  let list = state.jobs.filter(j=>admin()||((j.status||"open")==="open"&&!window.sxgJobExpired(j)&&(!jobDate(j)||jobDate(j)>=today())));
+
+  if(admin() && selectedPid){
+    const jobIds = new Set(state.assignments.filter(a=>window.sxgPid(a)===selectedPid).map(a=>String(a.job_id)));
+    const timeJobIds = new Set(state.timesheets.filter(t=>window.sxgPid(t)===selectedPid && t.job_id).map(t=>String(t.job_id)));
+    list = list.filter(j=>jobIds.has(String(j.id)) || timeJobIds.has(String(j.id)));
+  }
+
+  return `${window.sxgEmployeeFilterBar("Aufträge nach Mitarbeiter filtern")}
+  <section class="panel">
+    <div class="toolbar">
+      <h2>${admin()?'Aufträge verwalten':'Offene Einsätze'}</h2>
+      ${admin()?`<button onclick="openModal('job')">+ Auftrag</button> <button onclick="openModal('repeat')">Wiederholen</button>`:""}
+    </div>
+    <div class="table">${list.map(j=>{
+      const c=assignedCount(j.id), max=Number(j.needed_employees||1), full=c>=max, mine=isAssigned(j.id);
+      const openMine=window.sxgOpenAttendance(myId(),j.id);
+      const assignedNames=state.assignments.filter(a=>String(a.job_id)===String(j.id)).map(a=>`${esc(nameOf(window.sxgPid(a)))} <button class='danger' onclick="unassignJob(${j.id},'${window.sxgPid(a)}')">x</button>`).join(" ")||"niemand";
+      return `<div class="row">
+        <div>
+          <b>${esc(j.title)}</b><br>
+          ${esc(j.client||"")} · ${esc(j.location||"")}<br>
+          ${esc(j.address||"")}<br>
+          ${esc(jobDate(j)||"")} ${esc(j.start_time||"")}-${esc(j.end_time||"")}<br>
+          ${admin()?`<b>Eingetragen:</b> ${assignedNames}`:""}
+        </div>
+        <span>${c}/${max}</span>
+        <span class="badge ${full?'warn':'ok'}">${full?'voll':'frei'}</span>
+        <div>
+          ${admin()
+            ? `<button class="secondary" onclick="openModal('assign',${j.id})">Eintragen</button> <button class="secondary" onclick="openModal('job',${j.id})">Bearbeiten</button> <button class="danger" onclick="delJob(${j.id})">Löschen</button>`
+            : openMine
+              ? `<button class="ok" onclick="checkOut()">Check-out</button>`
+              : mine
+                ? `<button class="ok" onclick="checkIn(${j.id})">Check-in</button> <button class="secondary" onclick="unassignJob(${j.id})">Austragen</button>`
+                : `<button onclick="assignJob(${j.id})" ${full?'disabled':''}>Eintragen</button>`
+          }
+        </div>
+      </div>`;
+    }).join("")||`<div class="empty">${selectedPid?"Keine Aufträge für diesen Mitarbeiter":"Keine Einsätze"}</div>`}</div>
+  </section>`;
+};
+
+window.assignmentsHtml = function(){
+  const selectedPid = window.sxgFilterPid();
+  let assignmentRows = window.sxgFilteredAssignments();
+
+  let timeRows = (admin()?state.timesheets:myTimes()).map(t=>({
+    job_id:t.job_id,
+    profile_id:window.sxgPid(t),
+    timesheet_id:t.id,
+    fromTimesheet:true
+  }));
+  if(admin() && selectedPid) timeRows = timeRows.filter(t=>window.sxgPid(t)===selectedPid);
+
+  const allRows = [...assignmentRows, ...timeRows];
+  const seen = new Set();
+  const unique = allRows.filter(a=>{
+    const key = `${String(a.job_id||"none")}-${window.sxgPid(a)}-${String(a.timesheet_id||"assignment")}`;
+    if(seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  const hasTimesheet = a => state.timesheets.some(t=>window.sxgPid(t)===window.sxgPid(a)&&String(t.job_id||"")===String(a.job_id||""));
+  const current = assignmentRows.filter(a=>{
+    const j=jobOf(a.job_id)||{};
+    return window.sxgOpenAttendance(window.sxgPid(a),a.job_id) || (!window.sxgJobExpired(j)&&!hasTimesheet(a));
+  });
+  const history = unique.filter(a=>a.fromTimesheet || hasTimesheet(a) || window.sxgJobExpired(jobOf(a.job_id)||{}));
+
+  const row = a => {
+    const pid=window.sxgPid(a), j=jobOf(a.job_id)||{}, open=window.sxgOpenAttendance(pid,a.job_id);
+    const ts=state.timesheets.find(t=>String(t.id||"")===String(a.timesheet_id||"")||(window.sxgPid(t)===pid&&String(t.job_id||"")===String(a.job_id||"")));
+    const actual=ts?`${esc(ts.work_date||"")} ${esc(ts.start_time||"")} - ${esc(ts.end_time||"")}`:"";
+    return `<div class="row">
+      <div>
+        <b>${esc(j.title||ts?.activity||"Einsatz")}</b><br>
+        ${esc(j.location||ts?.location||"")} ${j.address?`· ${esc(j.address)}`:""}<br>
+        ${j.id?`Plan: ${esc(jobDate(j)||"")} ${esc(j.start_time||"")} - ${esc(j.end_time||"")}<br>`:""}
+        ${actual?`Tatsächlich: ${actual}<br>`:""}
+        ${admin()?`Mitarbeiter: <b>${esc(nameOf(pid))}</b>`:""}
+      </div>
+      <span>${ts?Number(ts.hours_worked||ts.hours||0).toFixed(4)+" h":""}</span>
+      <span class="badge ${open?'warn':ts?'ok':'warn'}">${open?'läuft':ts?'abgeschlossen':'aktuell'}</span>
+      <span>
+        ${open&&!admin()?`<button class="ok" onclick="checkOut()">Check-out</button>`:""}
+        ${open&&admin()?`<button class="ok" onclick="openModal('adminClockOut')">Check-out</button>`:""}
+        ${ts&&admin()?` <button class="secondary" onclick="openModal('time',${ts.id})">Stunden bearbeiten</button>`:""}
+      </span>
+    </div>`;
+  };
+
+  return `${window.sxgEmployeeFilterBar("Einsätze nach Mitarbeiter filtern")}
+  <section class="panel">
+    <h2>${admin()?'Einsätze Übersicht':'Meine Einsätze'}</h2>
+    <h3>Aktuell</h3>
+    <div class="table">${current.map(row).join("")||`<div class="empty">Keine aktuellen Einsätze</div>`}</div>
+    <br>
+    <h3>Einsatz-Historie</h3>
+    <div class="table">${history.map(row).join("")||`<div class="empty">Noch keine abgeschlossenen Einsätze</div>`}</div>
+  </section>`;
+};
+
+window.timesHtml = function(all){
+  let rows = all && admin() ? window.sxgFilteredTimes() : myTimes();
+  return `${all&&admin()?window.sxgEmployeeFilterBar("Stunden nach Mitarbeiter filtern"):""}
+  <section class="panel">
+    <div class="toolbar">
+      <h2>${all?'Alle Stunden':'Meine Stunden'}</h2>
+      <button onclick="openModal('time')">+ Stunden</button>
+      ${admin()?`<button onclick="openModal('adminClockIn')">+ Mitarbeiter einchecken</button> <button onclick="openModal('adminClockOut')">Mitarbeiter auschecken</button> <button onclick="openModal('bonus')">+ Prämie</button> <button onclick="openModal('premium')">+ Zuschlag</button>`:""}
+    </div>
+    <div class="table">${rows.map(t=>`<div class="row">
+      <div>
+        <b>${esc(all?nameOf(window.sxgPid(t)):"Meine Stunden")}</b><br>
+        ${esc(t.work_date||"")} ${esc(t.start_time||"")}-${esc(t.end_time||"")} · ${esc(t.location||"")}<br>
+        ${esc(t.activity||"")} ${esc(t.description||"")}
+      </div>
+      <span>${Number(t.hours_worked||t.hours||0).toFixed(4)} Std.</span>
+      <span class="badge ${t.approved?'ok':'warn'}">${esc(t.status||"pending")}</span>
+      <div>
+        <button class="secondary" onclick="openModal('time',${t.id})">Bearbeiten</button>
+        ${admin()?` <button class="danger" onclick="delTime(${t.id})">Löschen</button>`:""}
+      </div>
+    </div>`).join("")||`<div class="empty">Keine Stunden</div>`}</div>
+  </section>`;
+};
+
+window.scheduleHtml = function(){
+  let rows = admin()?window.sxgFilteredAssignments():myAssignments();
+  const items=rows.map(a=>({a,j:jobOf(a.job_id)})).filter(x=>x.j&&jobDate(x.j));
+
+  let leaveRows=state.leaves.filter(l=>(l.status==="approved"||l.approved===true));
+  const selectedPid=window.sxgFilterPid();
+  if(admin()&&selectedPid) leaveRows=leaveRows.filter(l=>window.sxgPid(l)===selectedPid);
+  if(!admin()) leaveRows=leaveRows.filter(l=>window.sxgPid(l)===myId());
+
+  const last=new Date(state.year,state.month+1,0), days=[];
+  for(let i=1;i<=last.getDate();i++)days.push(new Date(state.year,state.month,i).toISOString().slice(0,10));
+
+  return `${admin()?window.sxgEmployeeFilterBar("Dienstplan nach Mitarbeiter filtern"):""}
+  <section class="panel">
+    <div class="toolbar">
+      <button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button>
+      <h2>${state.month+1}/${state.year}</h2>
+      <button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button>
+    </div>
+    <div class="calendar">${days.map(d=>{
+      const jobs=items.filter(x=>jobDate(x.j)===d);
+      const abs=leaveRows.filter(l=>d>=String(l.start_date||"")&&d<=String(l.end_date||""));
+      return `<div class="day">
+        <b>${d.slice(8,10)}.${d.slice(5,7)}</b>
+        ${jobs.map(x=>`<span class="mini">${esc(x.j.start_time||"")} ${esc(x.j.title||"")} ${admin()?`· ${esc(nameOf(window.sxgPid(x.a)))}`:""}</span>`).join("")}
+        ${abs.map(l=>`<span class="mini">Abwesenheit: ${esc(l.leave_type||l.type||"Urlaub/Krank")} ${admin()?`· ${esc(nameOf(window.sxgPid(l)))}`:""}</span>`).join("")}
+      </div>`;
+    }).join("")}</div>
+  </section>`;
+};
+
+window.routesHtml = function(){
+  let rows = admin()?state.routes:state.routes.filter(r=>{
+    const myJobIds=myAssignments().map(a=>String(a.job_id));
+    return myJobIds.includes(String(r.job_id))&&((r.passenger_profile_ids||[]).includes(myId())||r.driver_profile_id===myId());
+  });
+
+  const selectedPid=window.sxgFilterPid();
+  if(admin()&&selectedPid){
+    rows=rows.filter(r=>r.driver_profile_id===selectedPid||(r.passenger_profile_ids||[]).includes(selectedPid));
+  }
+
+  return `${admin()?window.sxgEmployeeFilterBar("Fahrpläne nach Mitarbeiter filtern"):""}
+  <section class="panel">
+    <div class="toolbar"><h2>Fahrpläne</h2>${admin()?`<button onclick="openModal('route')">+ Fahrplan</button>`:""}</div>
+    <div class="table">${rows.map(r=>`<div class="row">
+      <div>
+        <b>${esc(jobOf(r.job_id)?.title||"Einsatz")}</b><br>
+        Fahrer: ${esc(nameOf(r.driver_profile_id))}<br>
+        Treffpunkt: ${esc(r.meeting_point||"")} · ${esc(r.meeting_time||"")}<br>
+        ${esc(r.notes||"")}
+      </div>
+      <span>${(r.passenger_profile_ids||[]).map(nameOf).join(", ")}</span>
+      <span class="badge ok">Fahrplan</span>
+      <span>${admin()?`<button class="secondary" onclick="openModal('route',${r.id})">Bearbeiten</button> <button class="danger" onclick="delRoute(${r.id})">Löschen</button>`:""}</span>
+    </div>`).join("")||`<div class="empty">Keine Fahrpläne</div>`}</div>
+  </section>`;
+};
+
+
+/* SXG v10.5 Leave/Sick Calendar Fix */
+window.sxgLeaveApproved = function(l){
+  return l.approved===true || l.approved==="true" || l.status==="approved" || l.status==="genehmigt";
+};
+window.sxgLeaveStart = function(l){
+  return String(l.start_date || l.from_date || l.date_from || l.start || l.work_date || "").slice(0,10);
+};
+window.sxgLeaveEnd = function(l){
+  return String(l.end_date || l.to_date || l.date_to || l.end || l.start_date || l.from_date || l.work_date || "").slice(0,10);
+};
+window.sxgLeaveType = function(l){
+  return l.leave_type || l.type || l.reason || "Urlaub/Krank";
+};
+window.sxgLeavePid = function(l){
+  return l.profile_id || l.employee_id || l.user_id || "";
+};
+
+window.scheduleHtml = function(){
+  let rows = admin()?window.sxgFilteredAssignments():myAssignments();
+  const items=rows.map(a=>({a,j:jobOf(a.job_id)})).filter(x=>x.j&&jobDate(x.j));
+
+  let leaveRows = state.leaves.filter(window.sxgLeaveApproved);
+  const selectedPid = window.sxgFilterPid ? window.sxgFilterPid() : "";
+  if(admin() && selectedPid) leaveRows = leaveRows.filter(l=>window.sxgLeavePid(l)===selectedPid);
+  if(!admin()) leaveRows = leaveRows.filter(l=>window.sxgLeavePid(l)===myId());
+
+  const last=new Date(state.year,state.month+1,0), days=[];
+  for(let i=1;i<=last.getDate();i++)days.push(new Date(state.year,state.month,i).toISOString().slice(0,10));
+
+  return `${admin()&&window.sxgEmployeeFilterBar?window.sxgEmployeeFilterBar("Dienstplan / Urlaub / Krank nach Mitarbeiter filtern"):""}
+  <section class="panel">
+    <div class="toolbar">
+      <button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button>
+      <h2>Dienstplan ${state.month+1}/${state.year}</h2>
+      <button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button>
+    </div>
+    <div class="calendar">${days.map(d=>{
+      const jobs=items.filter(x=>jobDate(x.j)===d);
+      const abs=leaveRows.filter(l=>{
+        const s=window.sxgLeaveStart(l), e=window.sxgLeaveEnd(l);
+        return s && e && d>=s && d<=e;
+      });
+      return `<div class="day">
+        <b>${d.slice(8,10)}.${d.slice(5,7)}</b>
+        ${jobs.map(x=>`<span class="mini">${esc(x.j.start_time||"")} ${esc(x.j.title||"")} ${admin()?`· ${esc(nameOf(window.sxgPid?window.sxgPid(x.a):(x.a.profile_id||x.a.employee_id)))}`:""}</span>`).join("")}
+        ${abs.map(l=>`<span class="mini" style="background:#fff3cd;border:1px solid #ffd666">Abwesenheit: ${esc(window.sxgLeaveType(l))} ${admin()?`· ${esc(nameOf(window.sxgLeavePid(l)))}`:""}</span>`).join("")}
+      </div>`;
+    }).join("")}</div>
+  </section>`;
+};
+
+window.leaveHtml = function(){
+  let rows = admin()?state.leaves:state.leaves.filter(l=>window.sxgLeavePid(l)===myId());
+  const selectedPid = window.sxgFilterPid ? window.sxgFilterPid() : "";
+  if(admin() && selectedPid) rows = rows.filter(l=>window.sxgLeavePid(l)===selectedPid);
+
+  return `${admin()&&window.sxgEmployeeFilterBar?window.sxgEmployeeFilterBar("Urlaub/Krank nach Mitarbeiter filtern"):""}
+  <section class="panel">
+    <div class="toolbar"><h2>Urlaub / Krank</h2><button onclick="openModal('leave')">+ Antrag</button></div>
+    <div class="table">${rows.map(l=>`<div class="row">
+      <div>
+        <b>${esc(admin()?nameOf(window.sxgLeavePid(l)):"Mein Antrag")}</b><br>
+        ${esc(window.sxgLeaveType(l))} · ${esc(window.sxgLeaveStart(l))} bis ${esc(window.sxgLeaveEnd(l))}<br>
+        ${esc(l.note||l.notes||l.reason||"")}
+      </div>
+      <span>${window.sxgLeaveApproved(l)?"genehmigt":esc(l.status||"offen")}</span>
+      <span class="badge ${window.sxgLeaveApproved(l)?'ok':'warn'}">${window.sxgLeaveApproved(l)?"im Dienstplan":"offen"}</span>
+      <span>${admin()&&!window.sxgLeaveApproved(l)?`<button class="ok" onclick="reviewLeave(${l.id},true)">Genehmigen</button> <button class="danger" onclick="reviewLeave(${l.id},false)">Ablehnen</button>`:""}</span>
+    </div>`).join("")||`<div class="empty">Keine Anträge</div>`}</div>
+  </section>`;
+};
 
 init();
 }catch(e){document.getElementById("root").innerHTML='<div class="error"><b>Startfehler:</b>\\n'+String(e.message)+'</div>'}
