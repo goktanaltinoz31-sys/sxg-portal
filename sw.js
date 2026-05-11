@@ -1,4 +1,4 @@
-const CACHE_NAME = "sxg-portal-v8-1";
+const CACHE_NAME = "sxg-portal-v12";
 
 self.addEventListener("install", event => {
   self.skipWaiting();
@@ -6,35 +6,18 @@ self.addEventListener("install", event => {
 
 self.addEventListener("activate", event => {
   event.waitUntil(
-    caches.keys()
-      .then(keys => Promise.all(keys.map(k => caches.delete(k))))
-      .then(() => self.clients.claim())
+    caches.keys().then(keys => Promise.all(keys.map(k => caches.delete(k)))).then(() => self.clients.claim())
   );
 });
 
 self.addEventListener("fetch", event => {
   if (event.request.method !== "GET") return;
-
   const url = new URL(event.request.url);
-
-  // Always network-first for main page / HTML so old index.html is not stuck
   if (event.request.mode === "navigate" || url.pathname === "/" || url.pathname.endsWith(".html")) {
-    event.respondWith(
-      fetch(event.request, { cache: "no-store" })
-        .catch(() => caches.match(event.request))
-    );
+    event.respondWith(fetch(event.request, { cache: "no-store" }).catch(() => caches.match(event.request)));
     return;
   }
-
-  event.respondWith(
-    fetch(event.request)
-      .then(response => {
-        const copy = response.clone();
-        caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy)).catch(() => {});
-        return response;
-      })
-      .catch(() => caches.match(event.request))
-  );
+  event.respondWith(fetch(event.request).catch(() => caches.match(event.request)));
 });
 
 self.addEventListener("push", event => {

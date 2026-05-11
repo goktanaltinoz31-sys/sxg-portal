@@ -1966,6 +1966,407 @@ window.leaveHtml = function(){
   };
 })();
 
+
+/* SXG v12 PUSH + REMINDER + CHECK-IN WINDOW */
+(function(){
+  function pidOf(x){ return x?.profile_id || x?.employee_id || x?.user_id || ""; }
+  function jobStart(j){
+    const d=jobDate(j)||j?.start_date||"";
+    if(!d)return null;
+    const dt=new Date(`${d}T${String(j?.start_time||"00:00").slice(0,5)}:00`);
+    return isNaN(dt.getTime())?null:dt;
+  }
+  function jobEnd(j){
+    const d=jobDate(j)||j?.start_date||"";
+    if(!d)return null;
+    const dt=new Date(`${d}T${String(j?.end_time||"23:59").slice(0,5)}:00`);
+    const st=jobStart(j);
+    if(st&&dt<st)dt.setDate(dt.getDate()+1);
+    return isNaN(dt.getTime())?null:dt;
+  }
+  function openAtt(pid, jobId=null){
+    return state.attendance.find(a=>pidOf(a)===pid && !a.check_out && !a.clock_out && (!jobId || String(a.job_id)===String(jobId)));
+  }
+  function assignedProfiles(jobId){
+    return state.assignments.filter(a=>String(a.job_id)===String(jobId)).map(pidOf).filter(Boolean);
+  }
+  function urlBase64ToUint8Array(base64String){
+    const padding="=".repeat((4-base64String.length%4)%4);
+    const base64=(base64String+padding).replace(/-/g,"+").replace(/_/g,"/");
+    const rawData=atob(base64);
+    return Uint8Array.from([...rawData].map(c=>c.charCodeAt(0)));
+  }
+  async function sxgNotifyProfiles(title, body, profileIds=[]){
+    try{
+      await fetch("/api/send-push",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({title,body,profileIds,url:location.origin})
+      });
+    }catch(e){ console.warn("Push send failed", e); }
+  }
+  window.sxgNotifyProfiles = sxgNotifyProfiles;
+
+  askPush = window.askPush = async function(){
+    if(!("serviceWorker" in navigator))return msg("Push wird von diesem Browser nicht unterstützt.");
+    if(!("PushManager" in window))return msg("Push wird auf diesem Gerät/Browser nicht unterstützt. Auf iPhone muss die App über Safari zum Home-Bildschirm hinzugefügt sein.");
+    if(Notification.permission==="denied")return msg("Benachrichtigungen sind blockiert. Bitte in den Browser-/Handy-Einstellungen erlauben.");
+
+    const permission=await Notification.requestPermission();
+    if(permission!=="granted")return msg("Benachrichtigung wurde nicht erlaubt.");
+
+    const reg=await navigator.serviceWorker.register("/sw.js?v=12");
+    await navigator.serviceWorker.ready;
+
+    const publicKey=(window.VAPID_PUBLIC_KEY || "BIhKZ71zFU8ix8qDiJ6uTwy7CPCIfuN_1UdmNgEp5kNntGdJ907YUc_1oNtrY2bOPfXKVAMV0b-2B5EHTGL1Dfk").trim();
+    let sub=await reg.pushManager.getSubscription();
+    if(!sub){
+      sub=await reg.pushManager.subscribe({
+        userVisibleOnly:true,
+        applicationServerKey:urlBase64ToUint8Array(publicKey)
+      });
+    }
+
+    const data=sub.toJSON();
+    const r=await sb.from("push_subscriptions").upsert({
+      profile_id:myId(),
+      endpoint:data.endpoint,
+      p256dh:data.keys.p256dh,
+      auth:data.keys.auth
+    },{onConflict:"endpoint"});
+
+    if(r.error)return msg(r.error.message);
+    msg("Push-Benachrichtigungen aktiviert.");
+  };
+
+  async function notifyJobChanged(row, isNew=false){
+    const ids=assignedProfiles(row.id);
+    const title=isNew?"Neuer Einsatz":"Einsatz geändert";
+    const body=`${row.title||"Einsatz"} · ${row.location||row.address||""} · ${row.job_date||row.start_date||""} ${row.start_time||""}`;
+    await sxgNotifyProfiles(title, body, ids);
+  }
+
+  saveJob = window.saveJob = async function(e){
+    e.preventDefault();
+    const f=new FormData(e.target), id=f.get("id");
+    const gpsActive=f.get("require_location_tracking")==="on";
+    const row={
+      title:f.get("title"), client:f.get("client"), location:f.get("location"), address:f.get("address"),
+      lat:f.get("lat")||null, lng:f.get("lng")||null, geo_radius_m:Number(f.get("geo_radius_m")||1000),
+      require_location_tracking:gpsActive,
+      job_date:f.get("job_date"), start_date:f.get("job_date"), end_date:f.get("job_date"),
+      start_time:f.get("start_time"), end_time:f.get("end_time"),
+      needed_employees:Number(f.get("needed_employees")||1), notes:f.get("notes"), status:f.get("status")||"open"
+    };
+    if(gpsActive && (!row.lat||!row.lng) && row.address && window.sxgGeocodeAddress){
+      const g=await window.sxgGeocodeAddress(row.address);
+      if(g){ row.lat=g.lat; row.lng=g.lng; }
+      else return msg("Adresse konnte nicht gefunden werden. Bitte vollständige Adresse eintragen oder GPS/Radius deaktivieren.");
+    }
+    const r=id?await sb.from("jobs").update(row).eq("id",id).select().single():await sb.from("jobs").insert(row).select().single();
+    if(r.error)return msg(r.error.message);
+    await loadAll();
+    await notifyJobChanged(r.data||{...row,id}, !id);
+    closeModal(); render();
+  };
+
+  assignJob = window.assignJob = async function(jobId,pid=myId()){
+    await loadAll();
+    const j=jobOf(jobId);
+    if(!j)return msg("Einsatz nicht gefunden.");
+    const exists=state.assignments.some(a=>String(a.job_id)===String(jobId)&&pidOf(a)===pid);
+    if(exists)return msg("Mitarbeiter ist schon eingetragen.");
+    if(assignedCount(jobId)>=Number(j.needed_employees||1) && !admin())return msg("Dieser Einsatz ist voll.");
+    const r=await sb.from("job_assignments").insert({job_id:jobId,profile_id:pid,employee_id:pid});
+    if(r.error)return msg(r.error.message);
+    await sxgNotifyProfiles("Einsatz zugewiesen",`${j.title||"Einsatz"} · ${jobDate(j)||""} ${j.start_time||""}`,[pid]);
+    await loadAll();render();
+  };
+
+  checkIn = window.checkIn = async function(jobId){
+    await loadAll();
+    const j=jobOf(jobId);
+    if(!j)return msg("Einsatz nicht gefunden.");
+    if(openAtt(myId()))return msg("Du bist bereits eingecheckt. Erst auschecken.");
+
+    const st=jobStart(j), en=jobEnd(j), now=Date.now();
+    if(en&&now>en.getTime())return msg("Der Einsatz ist bereits beendet.");
+    if(st&&now<st.getTime()-15*60*1000)return msg("Check-in ist erst 15 Minuten vor Arbeitsbeginn möglich.");
+    if(st&&now>st.getTime()+15*60*1000)return msg("Check-in ist nur bis 15 Minuten nach Beginn möglich. Admin kann nachträglich einchecken.");
+
+    if(!navigator.geolocation)return msg("GPS nicht verfügbar.");
+    const gpsActive = j.require_location_tracking !== false && j.require_location_tracking !== "false";
+    if(gpsActive && (!j.lat || !j.lng)){
+      const addr=[j.address,j.location,j.client].filter(Boolean).join(", ");
+      if(window.sxgGeocodeAddress){
+        const g=await window.sxgGeocodeAddress(addr);
+        if(g){ j.lat=g.lat; j.lng=g.lng; await sb.from("jobs").update({lat:g.lat,lng:g.lng}).eq("id",j.id); }
+        else return msg("Adresse konnte nicht gefunden werden. Bitte vollständige Adresse eintragen oder GPS/Radius deaktivieren.");
+      }else return msg("GPS-Daten fehlen.");
+    }
+
+    navigator.geolocation.getCurrentPosition(async pos=>{
+      const lat=pos.coords.latitude,lng=pos.coords.longitude;
+      if(gpsActive){
+        const dist=hav(lat,lng,Number(j.lat),Number(j.lng));
+        const radius=Number(j.geo_radius_m||1000);
+        if(dist>radius)return msg("Du bist zu weit weg. Entfernung: "+Math.round(dist)+" m / erlaubt: "+radius+" m");
+      }
+      const iso=new Date().toISOString();
+      const r=await sb.from("attendance").insert({profile_id:myId(),employee_id:myId(),job_id:jobId,check_in:iso,clock_in:iso,lat,lng,present:true});
+      if(r.error){
+        if(String(r.error.message).includes("duplicate")||String(r.error.message).includes("unique"))return msg("Du bist bereits eingecheckt.");
+        return msg(r.error.message);
+      }
+      await sxgNotifyProfiles("Mitarbeiter eingecheckt",`${nameOf(myId())} · ${j.title||"Einsatz"}`,state.profiles.filter(p=>p.role==="admin").map(p=>p.id));
+      startTracking(jobId); await loadAll(); render();
+    },()=>msg("GPS am Handy/Browser erlauben."),{enableHighAccuracy:true,timeout:12000,maximumAge:0});
+  };
+
+  async function sendShiftReminders(){
+    if(!myId())return;
+    const now=Date.now();
+    const myAss=state.assignments.filter(a=>pidOf(a)===myId());
+    for(const a of myAss){
+      const j=jobOf(a.job_id);
+      if(!j)continue;
+      const st=jobStart(j);
+      if(!st)continue;
+      const diff=st.getTime()-now;
+      const key1=`sxg-reminder-24h-${myId()}-${j.id}`;
+      const key2=`sxg-reminder-2h-${myId()}-${j.id}`;
+      if(diff>23.5*3600000 && diff<24.5*3600000 && !localStorage.getItem(key1)){
+        localStorage.setItem(key1,"1");
+        await sxgNotifyProfiles("Erinnerung: Einsatz morgen",`${j.title} · ${jobDate(j)} ${j.start_time}`,[myId()]);
+      }
+      if(diff>1.8*3600000 && diff<2.2*3600000 && !localStorage.getItem(key2)){
+        localStorage.setItem(key2,"1");
+        await sxgNotifyProfiles("Erinnerung: Einsatz in 2 Stunden",`${j.title} · ${jobDate(j)} ${j.start_time}`,[myId()]);
+      }
+    }
+  }
+
+  const oldRefresh = window.refreshPortal;
+  refreshPortal = window.refreshPortal = async function(){
+    await loadAll();
+    await sendShiftReminders();
+    render();
+  };
+
+  const oldRender = render;
+  render = window.render = function(){
+    oldRender();
+    setTimeout(()=>sendShiftReminders(),500);
+  };
+
+  if(!window.sxgReminderTimer){
+    window.sxgReminderTimer=setInterval(async()=>{try{await loadAll();await sendShiftReminders()}catch(e){}},10*60*1000);
+  }
+})();
+
+
+/* SXG v13 Job Media + Date Filter + Targeted Jobs + Push */
+(function(){
+  function pidOf(x){ return x?.profile_id || x?.employee_id || x?.user_id || ""; }
+  function selectedPid(){ if(!state.adminEmployeeFilter) state.adminEmployeeFilter=""; return state.adminEmployeeFilter; }
+  function dfKey(){ if(!state.dateFilter) state.dateFilter={from:"",to:""}; return state.dateFilter; }
+  function inDateRange(d){
+    const f=dfKey();
+    if(!d)return true;
+    const s=String(d).slice(0,10);
+    if(f.from && s<f.from)return false;
+    if(f.to && s>f.to)return false;
+    return true;
+  }
+  function dateFilterBar(title="Datum filtern"){
+    return `<section class="panel"><div class="toolbar"><h3>${esc(title)}</h3><input type="date" value="${esc(dfKey().from)}" onchange="state.dateFilter=state.dateFilter||{};state.dateFilter.from=this.value;render()"><input type="date" value="${esc(dfKey().to)}" onchange="state.dateFilter=state.dateFilter||{};state.dateFilter.to=this.value;render()"><button class="secondary" onclick="state.dateFilter={from:'',to:''};render()">Datum löschen</button></div></section>`;
+  }
+  function employeeFilterBar(title="Mitarbeiter filtern"){
+    if(!admin())return "";
+    return `<section class="panel"><div class="toolbar"><h3>${esc(title)}</h3><select onchange="state.adminEmployeeFilter=this.value;render()"><option value="">Alle Mitarbeiter</option>${state.profiles.map(p=>`<option value="${p.id}" ${state.adminEmployeeFilter===p.id?"selected":""}>${esc(p.full_name||p.email)}</option>`).join("")}</select>${state.adminEmployeeFilter?`<button class="secondary" onclick="state.adminEmployeeFilter='';render()">Filter löschen</button>`:""}</div></section>`;
+  }
+  function jobDateValue(j){ return jobDate(j)||j?.job_date||j?.start_date||""; }
+  function openAtt(pid,jobId=null){ return state.attendance.find(a=>pidOf(a)===pid&&!a.check_out&&!a.clock_out&&(!jobId||String(a.job_id)===String(jobId))); }
+  function jobStart(j){const d=jobDateValue(j);if(!d)return null;const dt=new Date(`${d}T${String(j?.start_time||"00:00").slice(0,5)}:00`);return isNaN(dt.getTime())?null:dt;}
+  function jobEnd(j){const d=jobDateValue(j);if(!d)return null;const dt=new Date(`${d}T${String(j?.end_time||"23:59").slice(0,5)}:00`);const st=jobStart(j);if(st&&dt<st)dt.setDate(dt.getDate()+1);return isNaN(dt.getTime())?null:dt;}
+  function jobExpired(j){const e=jobEnd(j);return !!e&&Date.now()>e.getTime();}
+  function getJobVisibility(jobId){
+    return (state.job_visibility||[]).filter(v=>String(v.job_id)===String(jobId)).map(v=>v.profile_id);
+  }
+  function canSeeJob(j){
+    if(admin())return true;
+    const ids=getJobVisibility(j.id);
+    if(ids.length && !ids.includes(myId()))return false;
+    return true;
+  }
+  function assignedIds(jobId){ return state.assignments.filter(a=>String(a.job_id)===String(jobId)).map(pidOf).filter(Boolean); }
+  function unique(arr){ return [...new Set(arr.filter(Boolean))]; }
+  async function notifyProfiles(title,body,ids=[]){
+    if(window.sxgNotifyProfiles)return window.sxgNotifyProfiles(title,body,ids);
+    try{ await fetch("/api/send-push",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({title,body,profileIds:ids,url:location.origin})}); }catch(e){}
+  }
+
+  async function ensureV13Loaded(){
+    const safe=async p=>{try{const r=await p;return r.data||[]}catch(e){return[]}};
+    state.job_images = await safe(sb.from("job_images").select("*").order("created_at",{ascending:false}));
+    state.job_visibility = await safe(sb.from("job_visible_profiles").select("*"));
+  }
+  const oldLoadAllV13 = loadAll;
+  loadAll = window.loadAll = async function(){ await oldLoadAllV13(); await ensureV13Loaded(); };
+
+  window.uploadJobImage = async function(jobId){
+    const inp=document.createElement("input");
+    inp.type="file"; inp.accept="image/*"; inp.multiple=true;
+    inp.onchange=async()=>{
+      for(const file of inp.files){
+        const path=`job-${jobId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
+        const up=await sb.storage.from("job-images").upload(path,file,{upsert:false});
+        if(up.error){msg(up.error.message);continue}
+        const r=await sb.from("job_images").insert({job_id:jobId,profile_id:myId(),file_path:path,file_name:file.name});
+        if(r.error)msg(r.error.message);
+      }
+      await loadAll();render();
+    };
+    inp.click();
+  };
+  window.openJobImage = async function(path){
+    const r=await sb.storage.from("job-images").createSignedUrl(path,3600);
+    if(r.error)return msg(r.error.message);
+    window.open(r.data.signedUrl,"_blank");
+  };
+  window.delJobImage = async function(id,path){
+    if(!confirm("Bild löschen?"))return;
+    await sb.storage.from("job-images").remove([path]);
+    const r=await sb.from("job_images").delete().eq("id",id);
+    if(r.error)return msg(r.error.message);
+    await loadAll();render();
+  };
+  window.jobImagesHtml = function(jobId){
+    const imgs=(state.job_images||[]).filter(i=>String(i.job_id)===String(jobId));
+    return `<div style="margin-top:10px"><b>Bilder:</b><br>${imgs.map(i=>`<button class="secondary" onclick="openJobImage('${String(i.file_path).replace(/'/g,"\\'")}')">📷 ${esc(i.file_name||"Bild")}</button>${admin()?` <button class="danger" onclick="delJobImage(${i.id},'${String(i.file_path).replace(/'/g,"\\'")}')">x</button>`:""}`).join(" ")||"<small>Keine Bilder</small>"} <button onclick="uploadJobImage(${jobId})">+ Bild</button></div>`;
+  };
+
+  window.setJobVisibility = async function(e){
+    e.preventDefault();
+    const f=new FormData(e.target), jobId=f.get("job_id");
+    const ids=[...document.querySelectorAll(".jobVisEmp:checked")].map(x=>x.value);
+    await sb.from("job_visible_profiles").delete().eq("job_id",jobId);
+    for(const pid of ids) await sb.from("job_visible_profiles").insert({job_id:jobId,profile_id:pid});
+    await notifyProfiles("Auftrag freigeschaltet",`${jobOf(jobId)?.title||"Auftrag"} ist für dich sichtbar.`,ids);
+    closeModal();await loadAll();render();
+  };
+  window.sendJobMessage = async function(e){
+    e.preventDefault();
+    const f=new FormData(e.target), jobId=f.get("job_id"), body=f.get("body");
+    const ids=[...document.querySelectorAll(".jobMsgEmp:checked")].map(x=>x.value);
+    for(const pid of ids){
+      await sb.from("chat_messages").insert({from_profile_id:myId(),to_profile_id:pid,body:`Auftrag: ${jobOf(jobId)?.title||""}\n${body||""}`});
+    }
+    await notifyProfiles("Nachricht zum Auftrag",`${jobOf(jobId)?.title||"Auftrag"}: ${body||""}`,ids);
+    closeModal();await loadAll();render();
+  };
+  window.sendChatImage = async function(toPid){
+    const inp=document.createElement("input");
+    inp.type="file"; inp.accept="image/*";
+    inp.onchange=async()=>{
+      const file=inp.files[0]; if(!file)return;
+      const path=`chat/${myId()}-${toPid}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
+      const up=await sb.storage.from("chat-images").upload(path,file,{upsert:false});
+      if(up.error)return msg(up.error.message);
+      const r=await sb.from("chat_messages").insert({from_profile_id:myId(),to_profile_id:toPid,body:"[Bild]",image_path:path,image_name:file.name});
+      if(r.error)return msg(r.error.message);
+      await notifyProfiles("Bild erhalten",`${nameOf(myId())} hat dir ein Bild geschickt.`,[toPid]);
+      await loadAll();render();
+    };
+    inp.click();
+  };
+  window.openChatImage = async function(path){
+    const r=await sb.storage.from("chat-images").createSignedUrl(path,3600);
+    if(r.error)return msg(r.error.message);
+    window.open(r.data.signedUrl,"_blank");
+  };
+
+  const oldSaveJobV13 = saveJob;
+  saveJob = window.saveJob = async function(e){
+    e.preventDefault();
+    const f=new FormData(e.target), id=f.get("id");
+    const gpsActive=f.get("require_location_tracking")==="on";
+    const row={
+      title:f.get("title"), client:f.get("client"), location:f.get("location"), address:f.get("address"),
+      lat:f.get("lat")||null, lng:f.get("lng")||null, geo_radius_m:Number(f.get("geo_radius_m")||1000),
+      require_location_tracking:gpsActive, job_date:f.get("job_date"), start_date:f.get("job_date"), end_date:f.get("job_date"),
+      start_time:f.get("start_time"), end_time:f.get("end_time"), needed_employees:Number(f.get("needed_employees")||1), notes:f.get("notes"), status:f.get("status")||"open"
+    };
+    if(gpsActive&&(!row.lat||!row.lng)&&row.address&&window.sxgGeocodeAddress){
+      const g=await window.sxgGeocodeAddress(row.address);
+      if(g){row.lat=g.lat;row.lng=g.lng}else return msg("Adresse konnte nicht gefunden werden. Bitte vollständige Adresse eintragen oder GPS deaktivieren.");
+    }
+    const r=id?await sb.from("jobs").update(row).eq("id",id).select().single():await sb.from("jobs").insert(row).select().single();
+    if(r.error)return msg(r.error.message);
+    await loadAll();
+    await notifyProfiles(id?"Einsatz geändert":"Neuer Einsatz",`${row.title||"Einsatz"} · ${row.location||row.address||""} · ${row.job_date||""} ${row.start_time||""}`,unique([...assignedIds(r.data?.id||id),...getJobVisibility(r.data?.id||id)]));
+    closeModal();render();
+  };
+
+  jobsHtml = window.jobsHtml = function(){
+    const fp=state.adminEmployeeFilter||"";
+    let list=state.jobs.filter(j=>canSeeJob(j)&&inDateRange(jobDateValue(j))&&(admin()||((j.status||"open")==="open"&&!jobExpired(j))));
+    if(admin()&&fp){
+      const ids=new Set([...state.assignments.filter(a=>pidOf(a)===fp).map(a=>String(a.job_id)),...state.timesheets.filter(t=>pidOf(t)===fp&&t.job_id).map(t=>String(t.job_id)),...(state.job_visibility||[]).filter(v=>v.profile_id===fp).map(v=>String(v.job_id))]);
+      list=list.filter(j=>ids.has(String(j.id)));
+    }
+    const filter=admin()?`<section class="panel"><div class="toolbar"><h3>Mitarbeiter filtern</h3><select onchange="state.adminEmployeeFilter=this.value;render()"><option value="">Alle Mitarbeiter</option>${state.profiles.map(p=>`<option value="${p.id}" ${fp===p.id?"selected":""}>${esc(p.full_name||p.email)}</option>`).join("")}</select></div></section>`:"";
+    return `${filter}${dateFilterBar("Aufträge Datumfilter")}<section class="panel"><div class="toolbar"><h2>${admin()?'Aufträge verwalten':'Offene Einsätze'}</h2>${admin()?`<button onclick="openModal('job')">+ Auftrag</button> <button onclick="openModal('repeat')">Wiederholen</button>`:""}</div><div class="table">${list.map(j=>{const c=assignedCount(j.id),max=Number(j.needed_employees||1),full=c>=max,mine=isAssigned(j.id),open=openAtt(myId(),j.id),vis=getJobVisibility(j.id);return `<div class="row"><div><b>${esc(j.title)}</b><br>${esc(j.client||"")} · ${esc(j.location||"")}<br>${esc(j.address||"")}<br>${esc(jobDateValue(j)||"")} ${esc(j.start_time||"")}-${esc(j.end_time||"")}<br>${admin()?`<b>Sichtbar für:</b> ${vis.length?vis.map(nameOf).join(", "):"alle"}<br><b>Eingetragen:</b> ${state.assignments.filter(a=>String(a.job_id)===String(j.id)).map(a=>`${esc(nameOf(pidOf(a)))} <button class='danger' onclick="unassignJob(${j.id},'${pidOf(a)}')">x</button>`).join(" ")||"niemand"}`:""}${jobImagesHtml(j.id)}</div><span>${c}/${max}</span><span class="badge ${full?'warn':'ok'}">${full?'voll':'frei'}</span><div>${admin()?`<button class="secondary" onclick="openModal('assign',${j.id})">Eintragen</button> <button class="secondary" onclick="openModal('job',${j.id})">Bearbeiten</button> <button class="secondary" onclick="openModal('jobVisibility',${j.id})">Sichtbarkeit</button> <button class="secondary" onclick="openModal('jobMessage',${j.id})">Senden</button> <button class="danger" onclick="delJob(${j.id})">Löschen</button>`:open?`<button class="ok" onclick="checkOut()">Check-out</button>`:mine?`<button class="ok" onclick="checkIn(${j.id})">Check-in</button> <button class="secondary" onclick="unassignJob(${j.id})">Austragen</button>`:`<button onclick="assignJob(${j.id})" ${full?'disabled':''}>Eintragen</button>`}</div></div>`}).join("")||`<div class="empty">Keine Einsätze</div>`}</div></section>`;
+  };
+
+  const oldTimesHtmlV13 = timesHtml;
+  timesHtml = window.timesHtml = function(all){
+    let out=oldTimesHtmlV13(all);
+    return `${dateFilterBar("Stunden Datumfilter")}`+out;
+  };
+  const oldAssignmentsHtmlV13 = assignmentsHtml;
+  assignmentsHtml = window.assignmentsHtml = function(){
+    let out=oldAssignmentsHtmlV13();
+    return `${dateFilterBar("Einsätze Datumfilter")}`+out;
+  };
+  const oldScheduleHtmlV13 = scheduleHtml;
+  scheduleHtml = window.scheduleHtml = function(){
+    let out=oldScheduleHtmlV13();
+    return `${dateFilterBar("Dienstplan Datumfilter")}`+out;
+  };
+  const oldRoutesHtmlV13 = routesHtml;
+  routesHtml = window.routesHtml = function(){
+    let out=oldRoutesHtmlV13();
+    return `${dateFilterBar("Fahrpläne Datumfilter")}`+out;
+  };
+  const oldLeaveHtmlV13 = leaveHtml;
+  leaveHtml = window.leaveHtml = function(){
+    let out=oldLeaveHtmlV13();
+    return `${dateFilterBar("Urlaub/Krank Datumfilter")}`+out;
+  };
+
+  const oldModalV13 = modalHtml;
+  modalHtml = window.modalHtml = function(){
+    if(!state.modal)return "";
+    const {type,id}=state.modal;
+    if(type==="jobVisibility"){
+      const ids=getJobVisibility(id);
+      return modal("Auftrag sichtbar für",`<form class="form" id="jobVisibilityForm"><input type="hidden" name="job_id" value="${id}"><div class="full">${state.profiles.map(p=>`<label><input class="jobVisEmp" type="checkbox" value="${p.id}" ${ids.includes(p.id)?"checked":""}> ${esc(p.full_name||p.email)}</label><br>`).join("")}</div><small class="full">Wenn niemand ausgewählt ist, ist der Auftrag für alle sichtbar.</small><button>Speichern</button></form>`);
+    }
+    if(type==="jobMessage"){
+      return modal("Auftrag senden / Nachricht",`<form class="form" id="jobMessageForm"><input type="hidden" name="job_id" value="${id}"><div class="full">${state.profiles.map(p=>`<label><input class="jobMsgEmp" type="checkbox" value="${p.id}"> ${esc(p.full_name||p.email)}</label><br>`).join("")}</div><textarea class="full" name="body" placeholder="Nachricht zum Auftrag"></textarea><button>Senden</button></form>`);
+    }
+    return oldModalV13();
+  };
+
+  const oldBindV13 = bind;
+  bind = window.bind = function(){
+    oldBindV13();
+    const forms={jobVisibilityForm:setJobVisibility,jobMessageForm:sendJobMessage};
+    Object.entries(forms).forEach(([id,fn])=>{const el=document.getElementById(id);if(el)el.onsubmit=fn});
+  };
+})();
+
 init();
 }catch(e){document.getElementById("root").innerHTML='<div class="error"><b>Startfehler:</b>\\n'+String(e.message)+'</div>'}
 </script>

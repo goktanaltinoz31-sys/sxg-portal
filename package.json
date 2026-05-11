@@ -6,6 +6,7 @@
     "build": "echo build-ok"
   },
   "dependencies": {
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "@supabase/supabase-js": "latest"
   }
 }
