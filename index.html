@@ -250,25 +250,38 @@ async function checkIn(jobId){
   if(!j)return msg("Einsatz nicht gefunden.");
   if(!navigator.geolocation)return msg("GPS nicht verfügbar.");
 
+  const already=state.attendance.find(a=>
+    (a.profile_id||a.employee_id)===myId() &&
+    !a.check_out &&
+    !a.clock_out
+  );
+  if(already)return msg("Du bist bereits eingecheckt. Bitte erst auschecken.");
+
+  if(!j.lat || !j.lng){
+    return msg("Für diesen Auftrag fehlen GPS-Koordinaten. Admin muss Latitude und Longitude beim Auftrag eintragen.");
+  }
+
+  const start=new Date(`${jobDate(j)}T${String(j.start_time||"00:00").slice(0,5)}:00`);
+  const end=new Date(`${jobDate(j)}T${String(j.end_time||"23:59").slice(0,5)}:00`);
+  if(end < start) end.setDate(end.getDate()+1);
+  const nowDate=new Date();
+
+  if(nowDate.getTime()>end.getTime()){
+    return msg("Der Einsatz ist bereits beendet.");
+  }
+  if(nowDate.getTime()>start.getTime()+15*60*1000){
+    return msg("Check-in ist nur bis 15 Minuten nach Beginn möglich. Admin kann dich nachträglich einchecken.");
+  }
+
   navigator.geolocation.getCurrentPosition(async pos=>{
     const lat=pos.coords.latitude,lng=pos.coords.longitude;
-
-    if(j.lat&&j.lng){
-      const dist=hav(lat,lng,Number(j.lat),Number(j.lng));
-      const radius=Number(j.geo_radius_m||1000);
-      if(dist>radius)return msg("Zu weit entfernt vom Einsatzort.");
+    const dist=hav(lat,lng,Number(j.lat),Number(j.lng));
+    const radius=Number(j.geo_radius_m||1000);
+    if(dist>radius){
+      return msg("Du bist zu weit vom Einsatzort entfernt. Entfernung: "+Math.round(dist)+" m / erlaubt: "+radius+" m");
     }
 
-    const now=new Date();
-    const start=new Date(`${jobDate(j)}T${String(j.start_time||"00:00")}:00`);
-    if(now.getTime()>start.getTime()+15*60*1000){
-      return msg("Check-in nur bis 15 Minuten nach Beginn möglich.");
-    }
-
-    const already=state.attendance.find(a=>(a.profile_id||a.employee_id)===myId()&&!a.check_out&&!a.clock_out);
-    if(already)return msg("Du bist bereits eingecheckt.");
-
-    const iso=now.toISOString();
+    const iso=new Date().toISOString();
     const r=await sb.from("attendance").insert({
       profile_id:myId(),
       employee_id:myId(),
@@ -283,8 +296,9 @@ async function checkIn(jobId){
 
     startTracking(jobId);
     await loadAll();
+    state.page="assignments";
     render();
-  },()=>msg("GPS erlauben."),{enableHighAccuracy:true,timeout:12000});
+  },()=>msg("GPS erlauben, sonst kein Check-in möglich."),{enableHighAccuracy:true,timeout:12000,maximumAge:0});
 }
 async function checkOut(){
   await loadAll();
@@ -307,30 +321,17 @@ async function checkOut(){
 
   if(r.error)return msg(r.error.message);
 
-  const mins=Math.max(0,(new Date(out)-new Date(open.check_in||open.clock_in))/60000);
-  const hours=Math.round((mins/60)*10000)/10000;
-
-  const j=jobOf(open.job_id)||{};
-
-  await sb.from("timesheets").insert({
-    profile_id:open.profile_id||open.employee_id,
-    employee_id:open.profile_id||open.employee_id,
-    job_id:open.job_id,
-    work_date:new Date(open.check_in||open.clock_in).toISOString().slice(0,10),
-    start_time:new Date(open.check_in||open.clock_in).toTimeString().slice(0,5),
-    end_time:new Date(out).toTimeString().slice(0,5),
-    hours_worked:hours,
-    hours:hours,
-    location:j.location||"",
-    activity:j.title||"Einsatz",
-    description:"Automatisch erstellt",
-    attendance_id:open.id,
-    approved:false,
-    status:"pending"
-  });
-
   stopTracking();
   await loadAll();
+
+  // Fallback, falls der DB-Trigger noch nicht aktiv war.
+  const created=state.timesheets.some(t=>String(t.attendance_id||"")===String(open.id));
+  if(!created && typeof createTimesheetFromAttendance==="function"){
+    await createTimesheetFromAttendance(open,out);
+    await loadAll();
+  }
+
+  state.page="assignments";
   render();
 }
 async function createTimesheetFromAttendance(att,outIso){
@@ -390,11 +391,23 @@ async function adminClockOut(e){
   const f=new FormData(e.target);
   const attendanceId=f.get("attendance_id"), dt=f.get("clock_out_at");
   if(!attendanceId||!dt)return msg("Offenen Check-in und Zeit auswählen.");
-  const iso=new Date(dt).toISOString();
-  const r=await sb.from("attendance").update({check_out:iso,clock_out:iso}).eq("id",attendanceId);
-  if(r.error)return msg(r.error.message);
-  closeModal();
+
   await loadAll();
+  const att=state.attendance.find(a=>String(a.id)===String(attendanceId));
+  if(!att)return msg("Check-in nicht gefunden.");
+
+  const iso=new Date(dt).toISOString();
+  const r=await sb.from("attendance").update({check_out:iso,clock_out:iso,present:false}).eq("id",attendanceId);
+  if(r.error)return msg(r.error.message);
+
+  await loadAll();
+  const created=state.timesheets.some(t=>String(t.attendance_id||"")===String(attendanceId));
+  if(!created && typeof createTimesheetFromAttendance==="function"){
+    await createTimesheetFromAttendance(att,iso);
+    await loadAll();
+  }
+
+  closeModal();
   render();
 }
 
@@ -417,11 +430,12 @@ function contentHtml(){if(state.page==="dashboard")return dashboardHtml();if(sta
 function dashboardHtml(){if(admin())return `<section class="panel"><div class="toolbar"><button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button><h2>${monthKey()}</h2><button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button></div></section><div class="cards"><div class="card"><h3>Mitarbeiter</h3><h1>${state.profiles.length}</h1></div><div class="card"><h3>Aufträge</h3><h1>${state.jobs.length}</h1></div><div class="card"><h3>Monatsstunden</h3><h1>${state.timesheets.filter(t=>isInSelectedMonth(rowDate(t))).reduce((s,t)=>s+Number(t.hours_worked||t.hours||0),0).toFixed(1)}</h1></div><div class="card"><h3>Trackingpunkte</h3><h1>${state.locations.length}</h1></div><div class="card"><h3>Abgeschlossene Einsätze</h3><h1>${state.assignments.filter(a=>assignmentStatus(a)==="abgeschlossen"||isJobExpired(jobOf(a.job_id)||{})).length}</h1></div></div>`;let hrs=myHours(),money=myMoney(),pct=Math.min(100,hrs/160*100);return `<section class="panel"><div class="toolbar"><button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button><h2>${monthKey()}</h2><button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button></div></section><div class="cards"><div class="card"><h3>Meine Stunden/Lohn</h3><div class="donut" style="--p:${pct}%"><div><b>${hrs.toFixed(1)} Std.</b><br>${money.toFixed(2)} €</div></div></div><div class="card"><h3>Meine Einsätze</h3><h1>${myAssignments().length}</h1></div></div>`}
 function jobsHtml(){const list=state.jobs.filter(j=>admin()||((j.status||"open")==="open"&&!isJobExpired(j)&&(!jobDate(j)||jobDate(j)>=today())));return `<section class="panel"><div class="toolbar"><h2>${admin()?'Aufträge verwalten':'Offene Einsätze'}</h2>${admin()?`<button onclick="openModal('job')">+ Auftrag</button> <button onclick="openModal('repeat')">Wiederholen</button>`:""}</div><div class="table">${list.map(j=>{let c=assignedCount(j.id),max=Number(j.needed_employees||1),full=c>=max,mine=isAssigned(j.id);return `<div class="row"><div><b>${esc(j.title)}</b><br>${esc(j.client)} · ${esc(j.location)}<br>${esc(j.address||"")}<br>${esc(jobDate(j))} ${esc(j.start_time)}-${esc(j.end_time)}<br>${!admin()&&checkInBlockReason(j)?`<small>${esc(checkInBlockReason(j))}</small><br>`:""}${admin()?`<b>Eingetragen:</b> ${state.assignments.filter(a=>String(a.job_id)===String(j.id)).map(a=>`${esc(nameOf(a.profile_id||a.employee_id))} <button class='danger' onclick="unassignJob(${j.id},'${a.profile_id||a.employee_id}')">x</button>`).join(" ")||"niemand"}<br><b>Reserve:</b> ${state.waitlist.filter(w=>String(w.job_id)===String(j.id)).map(w=>`${esc(nameOf(w.profile_id))} <button class='secondary' onclick="promoteWaitlist(${j.id},'${w.profile_id}')">einsetzen</button>`).join(" ")||"niemand"}`:""}</div><span>${c}/${max}</span><span class="badge ${full?'warn':'ok'}">${full?'voll':'frei'}</span><div>${admin()?`<button class="secondary" onclick="openModal('assign',${j.id})">Eintragen</button> <button class="secondary" onclick="openJobMapById(${j.id})">Karte</button> <button class="secondary" onclick="openModal('job',${j.id})">Bearbeiten</button> <button class="danger" onclick="delJob(${j.id})">Löschen</button>`:mine?`<button class="ok" onclick="checkIn(${j.id})" ${canEmployeeCheckIn(j)?"":"disabled"}>Check-in</button> <button class="secondary" onclick="unassignJob(${j.id})">Austragen</button>`:`<button onclick="assignJob(${j.id})" ${full?'disabled':''}>Eintragen</button> ${full?(isWaitlisted(j.id)?`<button class="secondary" onclick="removeWaitlist(${j.id})">Reserve entfernen</button>`:`<button class="secondary" onclick="joinWaitlist(${j.id})">Reserve</button>`):``}`}</div></div>`}).join("")||`<div class="empty">Keine Einsätze</div>`}</div></section>`}
 function assignmentStatus(a){
-  const j=jobOf(a.job_id)||{}
-  const att=state.attendance.find(x=>String(x.job_id)===String(a.job_id)&&(x.profile_id===(a.profile_id||a.employee_id)))
-  if(att&&att.check_in&&!att.check_out)return "läuft"
-  if(att&&att.check_out)return "abgeschlossen"
-  if(isJobExpired(j))return "abgelaufen"
+  const pid=a.profile_id||a.employee_id
+  const att=state.attendance.find(x=>String(x.job_id)===String(a.job_id)&&(x.profile_id||x.employee_id)===pid)
+  const ts=state.timesheets.find(t=>String(t.job_id||"")===String(a.job_id||"")&&(t.profile_id||t.employee_id)===pid)
+  if(att&&att.check_in&&!att.check_out&&!att.clock_out)return "läuft"
+  if(ts || (att&&(att.check_out||att.clock_out)))return "abgeschlossen"
+  if(isJobExpired(jobOf(a.job_id)||{}))return "abgelaufen"
   return "aktuell"
 }
 function assignmentTimes(a){
@@ -437,17 +451,25 @@ function assignmentHours(a){
 }
 function assignmentRow(a,history=false){
   const j=jobOf(a.job_id)||{}, status=assignmentStatus(a), pid=a.profile_id||a.employee_id
+  const open=state.attendance.find(x=>(x.profile_id||x.employee_id)===pid && String(x.job_id)===String(a.job_id) && !x.check_out && !x.clock_out)
+  const ts=state.timesheets.find(t=>String(t.id||"")===String(a.timesheet_id||"") || ((t.profile_id||t.employee_id)===pid && String(t.job_id||"")===String(a.job_id||"")))
+  const hours=ts?Number(ts.hours_worked||ts.hours||0).toFixed(4)+" h":assignmentHours(a)
+  const actual=ts?`${esc(ts.work_date||"")} ${esc(ts.start_time||"")} - ${esc(ts.end_time||"")}`:assignmentTimes(a)
   return `<div class="row">
     <div>
-      <b>${esc(j.title||"Einsatz")}</b><br>
-      ${esc(j.location||"")} ${j.address?`· ${esc(j.address)}`:""}<br>
-      Plan: ${esc(jobDate(j))} ${esc(j.start_time)}-${esc(j.end_time)}<br>${!admin()&&checkInBlockReason(j)?`<small>${esc(checkInBlockReason(j))}</small><br>`:""}
-      ${assignmentTimes(a)?`Tatsächlich: ${assignmentTimes(a)}<br>`:""}
+      <b>${esc(j.title||ts?.activity||"Einsatz")}</b><br>
+      ${esc(j.location||ts?.location||"")} ${j.address?`· ${esc(j.address)}`:""}<br>
+      ${j.id?`Plan: ${esc(jobDate(j))} ${esc(j.start_time)}-${esc(j.end_time)}<br>`:""}
+      ${actual?`Tatsächlich: ${actual}<br>`:""}
       ${admin()?`Mitarbeiter: <b>${esc(nameOf(pid))}</b>`:""}
     </div>
-    <span>${assignmentHours(a)}</span>
-    <span class="badge ${status==="abgeschlossen"?'ok':status==="abgelaufen"?'warn':'ok'}">${status}</span>
-    <span>${j.lat&&j.lng?`<button class="secondary" onclick="window.open('https://www.google.com/maps?q=${j.lat},${j.lng}','_blank')">Ort</button>`:""}</span>
+    <span>${hours}</span>
+    <span class="badge ${open?'warn':ts||status==="abgeschlossen"?'ok':status==="abgelaufen"?'warn':'ok'}">${open?'läuft':ts?'abgeschlossen':status}</span>
+    <span>
+      ${open&&!admin()?`<button class="ok" onclick="checkOut()">Auschecken</button>`:""}
+      ${open&&admin()?`<button class="ok" onclick="openModal('adminClockOut')">Auschecken</button>`:""}
+      ${j.lat&&j.lng?`<button class="secondary" onclick="window.open('https://www.google.com/maps?q=${j.lat},${j.lng}','_blank')">Ort</button>`:""}
+    </span>
   </div>`
 }
 function historyFromTimesheets(){
@@ -523,7 +545,7 @@ function cleanUiText(){
 
 function bind(){const map={loginForm:login,regForm:register,jobForm:saveJob,timeForm:saveTime,leaveForm:saveLeave,profileForm:saveProfile,bonusForm:saveBonus,adminClockInForm:adminClockIn,adminClockOutForm:adminClockOut,adminClockInForm:adminClockIn,adminClockOutForm:adminClockOut,premiumForm:savePremium,adminClockInForm:adminClockIn,adminClockOutForm:adminClockOut,adminClockInForm:adminClockIn,adminClockOutForm:adminClockOut,routeForm:saveRoute,chatForm:sendChat,payrollForm:uploadPayroll,repeatForm:createRepeatedJobs};Object.keys(map).forEach(id=>{let el=document.getElementById(id);if(el)el.addEventListener("submit",map[id])})}
 async function refreshPortal(){await loadAll();render()}
-Object.assign(window,{refreshPortal,setPage,openModal,closeModal,logout,delJob,assignJob,unassignJob,checkIn,checkOut,delTime,reviewLeave,askPush,openFile,quickApprove,joinWaitlist,removeWaitlist,promoteWaitlist,openJobMapById,adminClockIn,adminClockOut,adminClockIn,adminClockOut,state,render});
+Object.assign(window,{refreshPortal,setPage,openModal,closeModal,logout,delJob,assignJob,unassignJob,checkIn,checkOut,delTime,reviewLeave,askPush,openFile,quickApprove,joinWaitlist,removeWaitlist,promoteWaitlist,openJobMapById,adminClockIn,adminClockOut,state,render});
 
 
 
