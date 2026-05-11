@@ -1804,6 +1804,168 @@ window.leaveHtml = function(){
   };
 })();
 
+
+/* SXG v11.1 FINAL CLEANUP: Day detail + correct active check-in rows */
+(function(){
+  function pidOf(x){ return x?.profile_id || x?.employee_id || x?.user_id || ""; }
+  function selectedPid(){ if(!state.adminEmployeeFilter) state.adminEmployeeFilter=""; return state.adminEmployeeFilter; }
+  function filterBar(title){
+    if(!admin()) return "";
+    return `<section class="panel"><div class="toolbar"><h3>${esc(title)}</h3><select onchange="state.adminEmployeeFilter=this.value;render()"><option value="">Alle Mitarbeiter</option>${state.profiles.map(p=>`<option value="${p.id}" ${state.adminEmployeeFilter===p.id?"selected":""}>${esc(p.full_name||p.email)}</option>`).join("")}</select>${state.adminEmployeeFilter?`<button class="secondary" onclick="state.adminEmployeeFilter='';render()">Filter löschen</button>`:""}</div></section>`;
+  }
+  function openAtt(pid, jobId=null){
+    return state.attendance.find(a=>pidOf(a)===pid && !a.check_out && !a.clock_out && (!jobId || String(a.job_id)===String(jobId)));
+  }
+  function jobStart(j){
+    const d=jobDate(j)||j?.start_date||"";
+    if(!d)return null;
+    const dt=new Date(`${d}T${String(j?.start_time||"00:00").slice(0,5)}:00`);
+    return isNaN(dt.getTime())?null:dt;
+  }
+  function jobEnd(j){
+    const d=jobDate(j)||j?.start_date||"";
+    if(!d)return null;
+    const dt=new Date(`${d}T${String(j?.end_time||"23:59").slice(0,5)}:00`);
+    const st=jobStart(j);
+    if(st&&dt<st)dt.setDate(dt.getDate()+1);
+    return isNaN(dt.getTime())?null:dt;
+  }
+  function jobExpired(j){ const e=jobEnd(j); return !!e && Date.now()>e.getTime(); }
+  function leaveApproved(l){ return l.approved===true || l.approved==="true" || l.status==="approved" || l.status==="genehmigt"; }
+  function leaveStart(l){ return String(l.start_date||l.from_date||l.date_from||l.start||l.work_date||"").slice(0,10); }
+  function leaveEnd(l){ return String(l.end_date||l.to_date||l.date_to||l.end||l.start_date||l.from_date||l.work_date||"").slice(0,10); }
+  function leaveType(l){ return l.leave_type || l.type || l.reason || "Urlaub/Krank"; }
+
+  window.sxgPid = pidOf;
+  window.sxgOpenAttendance = openAtt;
+
+  function uniqueTimesheets(rows){
+    const seen=new Set();
+    return rows.filter(t=>{
+      const key = t.attendance_id ? `att-${t.attendance_id}` : `ts-${t.id||""}-${pidOf(t)}-${t.job_id||""}-${t.work_date||""}-${t.start_time||""}-${t.end_time||""}`;
+      if(seen.has(key))return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  window.openDayDetail = function(date){
+    state.modal={type:"daydetail",id:date};
+    render();
+  };
+
+  assignmentsHtml = window.assignmentsHtml = function(){
+    const fp=selectedPid();
+    let ass=admin()?state.assignments:myAssignments();
+    if(admin()&&fp)ass=ass.filter(a=>pidOf(a)===fp);
+
+    let tsRows=uniqueTimesheets(admin()?state.timesheets:myTimes());
+    if(admin()&&fp)tsRows=tsRows.filter(t=>pidOf(t)===fp);
+
+    const openRows = ass.filter(a=>openAtt(pidOf(a),a.job_id));
+    const plannedRows = ass.filter(a=>{
+      if(openAtt(pidOf(a),a.job_id))return false;
+      const j=jobOf(a.job_id)||{};
+      const hasTs=tsRows.some(t=>pidOf(t)===pidOf(a)&&String(t.job_id||"")===String(a.job_id||""));
+      return !jobExpired(j)&&!hasTs;
+    });
+
+    const historyRows = tsRows.map(t=>({job_id:t.job_id,profile_id:pidOf(t),timesheet_id:t.id,fromTimesheet:true}));
+    const current=[...openRows,...plannedRows];
+
+    const row = (a,isHistory=false) => {
+      const pid=pidOf(a), j=jobOf(a.job_id)||{};
+      const open=!isHistory ? openAtt(pid,a.job_id) : null;
+      const ts=isHistory
+        ? state.timesheets.find(t=>String(t.id||"")===String(a.timesheet_id||""))
+        : state.timesheets.find(t=>pidOf(t)===pid&&String(t.job_id||"")===String(a.job_id||"")&&t.attendance_id&&open&&String(t.attendance_id)===String(open.id));
+      const actual=ts?`${esc(ts.work_date||"")} ${esc(ts.start_time||"")} - ${esc(ts.end_time||"")}`:"";
+      const title=esc(j.title||ts?.activity||"Einsatz");
+      return `<div class="row">
+        <div>
+          <b>${title}</b><br>
+          ${esc(j.location||ts?.location||"")} ${j.address?`· ${esc(j.address)}`:""}<br>
+          ${j.id?`Plan: ${esc(jobDate(j)||"")} ${esc(j.start_time||"")} - ${esc(j.end_time||"")}<br>`:""}
+          ${actual?`Tatsächlich: ${actual}<br>`:""}
+          ${admin()?`Mitarbeiter: <b>${esc(nameOf(pid))}</b>`:""}
+        </div>
+        <span>${ts?Number(ts.hours_worked||ts.hours||0).toFixed(4)+" h":""}</span>
+        <span class="badge ${open?'warn':ts?'ok':'warn'}">${open?'läuft':ts?'abgeschlossen':'aktuell'}</span>
+        <span>
+          ${open&&!admin()?`<button class="ok" onclick="checkOut()">Check-out</button>`:""}
+          ${open&&admin()?`<button class="ok" onclick="openModal('adminClockOut')">Check-out</button>`:""}
+          ${ts&&admin()?` <button class="secondary" onclick="openModal('time',${ts.id})">Stunden bearbeiten</button>`:""}
+        </span>
+      </div>`;
+    };
+
+    return `${filterBar("Einsätze nach Mitarbeiter filtern")}
+      <section class="panel">
+        <h2>${admin()?'Einsätze Übersicht':'Meine Einsätze'}</h2>
+        <h3>Aktuell</h3>
+        <div class="table">${current.map(a=>row(a,false)).join("")||`<div class="empty">Keine aktuellen Einsätze</div>`}</div>
+        <br>
+        <h3>Einsatz-Historie</h3>
+        <div class="table">${historyRows.map(a=>row(a,true)).join("")||`<div class="empty">Noch keine abgeschlossenen Einsätze</div>`}</div>
+      </section>`;
+  };
+
+  scheduleHtml = window.scheduleHtml = function(){
+    let rows=admin()?state.assignments:myAssignments();
+    const fp=selectedPid();
+    if(admin()&&fp)rows=rows.filter(a=>pidOf(a)===fp);
+    const items=rows.map(a=>({a,j:jobOf(a.job_id)})).filter(x=>x.j&&jobDate(x.j));
+    let leaves=state.leaves.filter(leaveApproved);
+    if(admin()&&fp)leaves=leaves.filter(l=>pidOf(l)===fp);
+    if(!admin())leaves=leaves.filter(l=>pidOf(l)===myId());
+
+    const last=new Date(state.year,state.month+1,0), days=[];
+    for(let i=1;i<=last.getDate();i++)days.push(new Date(state.year,state.month,i).toISOString().slice(0,10));
+
+    return `${filterBar("Dienstplan / Urlaub / Krank nach Mitarbeiter filtern")}
+    <section class="panel">
+      <div class="toolbar">
+        <button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button>
+        <h2>Dienstplan ${state.month+1}/${state.year}</h2>
+        <button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button>
+      </div>
+      <div class="calendar">${days.map(d=>{
+        const jobs=items.filter(x=>jobDate(x.j)===d);
+        const abs=leaves.filter(l=>{const s=leaveStart(l),e=leaveEnd(l);return s&&e&&d>=s&&d<=e;});
+        return `<div class="day" onclick="openDayDetail('${d}')" style="cursor:pointer">
+          <b>${d.slice(8,10)}.${d.slice(5,7)}</b>
+          ${jobs.map(x=>`<span class="mini" style="color:#111;background:#eef5ff;border:1px solid #bcd7ff">${esc(x.j.start_time||"")} ${esc(x.j.title||"")} ${admin()?`· ${esc(nameOf(pidOf(x.a)))}`:""}</span>`).join("")}
+          ${abs.map(l=>`<span class="mini" style="color:#111;background:#fff3cd;border:1px solid #e6b800">Abwesenheit: ${esc(leaveType(l))} ${admin()?`· ${esc(nameOf(pidOf(l)))}`:""}</span>`).join("")}
+        </div>`;
+      }).join("")}</div>
+      <p style="margin-top:12px;color:#555">Tipp: Tag anklicken, um Details zu sehen.</p>
+    </section>`;
+  };
+
+  const oldModalV111 = modalHtml;
+  modalHtml = window.modalHtml = function(){
+    if(!state.modal)return "";
+    const {type,id}=state.modal;
+    if(type==="daydetail"){
+      const d=String(id);
+      let ass=admin()?state.assignments:myAssignments();
+      const fp=selectedPid();
+      if(admin()&&fp)ass=ass.filter(a=>pidOf(a)===fp);
+      const jobs=ass.map(a=>({a,j:jobOf(a.job_id)})).filter(x=>x.j&&jobDate(x.j)===d);
+      let leaves=state.leaves.filter(leaveApproved);
+      if(admin()&&fp)leaves=leaves.filter(l=>pidOf(l)===fp);
+      if(!admin())leaves=leaves.filter(l=>pidOf(l)===myId());
+      const abs=leaves.filter(l=>{const s=leaveStart(l),e=leaveEnd(l);return s&&e&&d>=s&&d<=e;});
+      return modal("Details "+d,`<div class="table">
+        ${jobs.map(x=>`<div class="row"><div><b>${esc(x.j.title||"Einsatz")}</b><br>${esc(x.j.location||"")} · ${esc(x.j.start_time||"")} - ${esc(x.j.end_time||"")}<br>${admin()?`Mitarbeiter: ${esc(nameOf(pidOf(x.a)))}`:""}</div><span class="badge ok">Einsatz</span><span></span><span>${admin()?`<button class="secondary" onclick="openModal('job',${x.j.id})">Bearbeiten</button>`:""}</span></div>`).join("")}
+        ${abs.map(l=>`<div class="row"><div><b>Abwesenheit: ${esc(leaveType(l))}</b><br>${esc(leaveStart(l))} bis ${esc(leaveEnd(l))}<br>${admin()?`Mitarbeiter: ${esc(nameOf(pidOf(l)))}`:""}</div><span class="badge warn" style="color:#111">Urlaub/Krank</span><span></span><span></span></div>`).join("")}
+        ${!jobs.length&&!abs.length?`<div class="empty">Keine Einträge an diesem Tag</div>`:""}
+      </div>`);
+    }
+    return oldModalV111();
+  };
+})();
+
 init();
 }catch(e){document.getElementById("root").innerHTML='<div class="error"><b>Startfehler:</b>\\n'+String(e.message)+'</div>'}
 </script>
