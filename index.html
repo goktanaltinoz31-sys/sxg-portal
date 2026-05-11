@@ -173,7 +173,19 @@ async function apiPush(title,body,profileIds=null){try{await fetch("/api/send-pu
 function b64(s){const p="=".repeat((4-s.length%4)%4),b=(s+p).replace(/-/g,"+").replace(/_/g,"/"),r=atob(b),o=new Uint8Array(r.length);for(let i=0;i<r.length;i++)o[i]=r.charCodeAt(i);return o}
 async function askPush(){if(!("serviceWorker"in navigator)||!("PushManager"in window))return msg("Push wird nicht unterstützt.");const perm=await Notification.requestPermission();if(perm!=="granted")return msg("Push nicht erlaubt.");const reg=await navigator.serviceWorker.register("/sw.js");const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64(VAPID_PUBLIC_KEY)});const j=sub.toJSON();const r=await sb.from("push_subscriptions").upsert({profile_id:myId(),endpoint:j.endpoint,p256dh:j.keys.p256dh,auth:j.keys.auth},{onConflict:"endpoint"});msg(r.error?r.error.message:"Push aktiviert.")}
 async function safe(p){try{const r=await p;return r.data||[]}catch(e){try{const c=JSON.parse(localStorage.getItem("sxg_cache")||"{}");return []}catch(_){return[]}}}
-async function init(){const{data}=await sb.auth.getSession();state.session=data.session;if(state.session){await loadProfile();startAutoRefresh()}render()}
+async function handlePasswordRecovery(){
+  const hash=new URLSearchParams(location.hash.replace("#","?"));
+  const type=hash.get("type");
+  if(type==="recovery"){
+    const pw=prompt("Neues Passwort eingeben:");
+    if(!pw)return;
+    const {error}=await sb.auth.updateUser({password:pw});
+    if(error)return msg(error.message);
+    history.replaceState(null,"",location.pathname);
+    msg("Passwort wurde geändert. Du kannst dich jetzt anmelden.");
+  }
+}
+async function init(){await handlePasswordRecovery();const{data}=await sb.auth.getSession();state.session=data.session;if(state.session){await loadProfile();startAutoRefresh()}render()}
 async function loadProfile(){const u=state.session.user;let{data}=await sb.from("profiles").select("*").eq("id",u.id).maybeSingle();if(!data){data={id:u.id,email:u.email,full_name:u.user_metadata?.full_name||u.email,role:"employee",approved:false};await sb.from("profiles").insert(data)}state.profile=data;await loadAll()}
 async function loadAll(){const r=await Promise.all([safe(sb.from("jobs").select("*").order("id",{ascending:false})),safe(sb.from("profiles").select("*").order("full_name")),safe(sb.from("job_assignments").select("*").order("id",{ascending:false})),safe(sb.from("timesheets").select("*").order("id",{ascending:false})),safe(sb.from("leave_requests").select("*").order("id",{ascending:false})),safe(sb.from("attendance").select("*").order("id",{ascending:false})),safe(sb.from("payroll_documents").select("*").order("id",{ascending:false})),safe(sb.from("route_plans").select("*").order("id",{ascending:false})),safe(sb.from("bonuses").select("*").order("id",{ascending:false})),safe(sb.from("shift_premiums").select("*").order("id",{ascending:false})),safe(sb.from("chat_messages").select("*").order("id",{ascending:false}).limit(100)),safe(sb.from("location_logs").select("*").order("id",{ascending:false}).limit(500))]);["jobs","profiles","assignments","timesheets","leaves","attendance","payslips","routes","bonuses","premiums","chats","locations"].forEach((k,i)=>state[k]=r[i])}
 async function login(e){e.preventDefault();const f=new FormData(e.target),{error}=await sb.auth.signInWithPassword({email:f.get("email"),password:f.get("password")});if(error)return msg(error.message);location.reload()}
@@ -426,9 +438,17 @@ async function sendChat(e){e.preventDefault();const f=new FormData(e.target),to=
 async function savePremium(e){e.preventDefault();const f=new FormData(e.target),row={name:f.get("name"),percent:Number(f.get("percent")||0),start_time:f.get("start_time"),end_time:f.get("end_time"),active:f.get("active")==="on"};const r=await sb.from("shift_premiums").insert(row);if(r.error)return msg(r.error.message);closeModal();await loadAll();render()}
 async function uploadPayroll(e){e.preventDefault();const f=new FormData(e.target),file=f.get("file"),pid=f.get("profile_id"),month=f.get("month");if(!file||!pid)return msg("PDF auswählen.");const path=`payslips/${pid}/${Date.now()}-${file.name}`,up=await sb.storage.from("payslips").upload(path,file,{upsert:true});if(up.error)return msg(up.error.message);const r=await sb.from("payroll_documents").insert({profile_id:pid,title:`Lohnabrechnung ${month}`,month,file_path:path,file_name:file.name,uploaded_by:myId()});if(r.error)return msg(r.error.message);await apiPush("Neue Lohnabrechnung","Deine Lohnabrechnung ist verfügbar.",[pid]);closeModal();await loadAll();render()}
 async function openFile(path){const{data,error}=await sb.storage.from("payslips").createSignedUrl(path,120);if(error)return msg(error.message);window.open(data.signedUrl,"_blank")}
-function render(){if(!state.session){root.innerHTML=authHtml();bind();cleanUiText();return}if(state.profile&&!state.profile.approved){root.innerHTML=`<div class="auth"><div class="auth-card"><h1>SXG Portal</h1><p>Konto wartet auf Freigabe.</p><button onclick="location.reload()">Status neu laden</button><br><br><button class="secondary" onclick="refreshPortal()">Aktualisieren</button><button class="secondary" onclick="logout()">Abmelden</button></div></div>`;return}root.innerHTML=appHtml();bind();cleanUiText()}
-function authHtml(){return `<div class="auth"><div class="auth-card"><h1>SXG Sicherheit & Service</h1><p>Mitarbeiterportal</p><form id="loginForm"><input name="email" placeholder="E-Mail" required><input name="password" type="password" placeholder="Passwort" required><button>Anmelden</button></form><hr><h3>Registrieren</h3><form id="regForm"><input name="name" placeholder="Name" required><input name="phone" placeholder="Telefon"><input name="email" placeholder="E-Mail" required><input name="password" type="password" placeholder="Passwort" required><button>Registrieren</button></form></div></div>`}
-function appHtml(){const ap=[["dashboard","Dashboard"],["jobs","Aufträge"],["assignments","Einsätze"],["schedule","Dienstplan"],["adminhours","Stunden Admin"],["livewage","Live-Lohn"],["tracking","Live-Tracking"],["maps","Karten"],["leave","Urlaub/Krank"],["employees","Mitarbeiter"],["payroll","Lohn"],["routes","Fahrpläne"],["chat","Chat"],["profile","Profil"]],ep=[["dashboard","Dashboard"],["jobs","Offene Einsätze"],["assignments","Meine Einsätze"],["schedule","Mein Dienstplan"],["timesheets","Meine Stunden"],["leave","Mein Urlaub/Krank"],["payroll","Lohn"],["routes","Fahrpläne"],["chat","Chat"],["profile","Profil"]],pages=admin()?ap:ep;return `<div class="app"><aside class="side ${state.openSide?'open':''}"><div class="logo">SXG<small>Sicherheit & Service GmbH</small></div><div class="nav">${pages.map(p=>`<button class="${state.page===p[0]?'active':''}" onclick="setPage('${p[0]}')">${p[1]}</button>`).join("")}</div><div class="userbox"><b>${esc(state.profile.full_name)}</b><br><small>${admin()?'Admin':'Mitarbeiter'}</small><br><br><button class="secondary" onclick="askPush()">Push aktivieren</button></div></aside><main class="main"><div class="top"><button class="mobile secondary" onclick="state.openSide=!state.openSide;render()">☰</button><div><h1>${pages.find(p=>p[0]===state.page)?.[1]||"Portal"}</h1></div><button class="secondary" onclick="refreshPortal()">Aktualisieren</button><button class="secondary" onclick="logout()">Abmelden</button></div>${contentHtml()}</main>${modalHtml()}</div>`}
+function render(){if(!state.session){root.innerHTML=authHtml();bind();cleanUiText();return}if(state.profile&&!state.profile.approved){root.innerHTML=`<div class="auth"><div class="auth-card"><h1>SXG Portal</h1><p>Konto wartet auf Freigabe.</p><button onclick="location.reload()">Status neu laden</button><br><br><button class="secondary" onclick="sxgSafeRefresh()">Aktualisieren</button><button class="secondary" onclick="logout()">Abmelden</button></div></div>`;return}root.innerHTML=appHtml();bind();cleanUiText()}
+async function resetPassword(){
+  const email=prompt("E-Mail eingeben, für die das Passwort zurückgesetzt werden soll:");
+  if(!email)return;
+  const redirectTo=location.origin;
+  const {error}=await sb.auth.resetPasswordForEmail(email,{redirectTo});
+  if(error)return msg(error.message);
+  msg("Passwort-Reset E-Mail wurde gesendet. Bitte Postfach prüfen.");
+}
+function authHtml(){return `<div class="auth"><div class="auth-card"><h1>SXG Sicherheit & Service</h1><p>Mitarbeiterportal</p><form id="loginForm"><input name="email" placeholder="E-Mail" required><input name="password" type="password" placeholder="Passwort" required><button>Anmelden</button><button type="button" class="secondary" onclick="resetPassword()">Passwort vergessen?</button></form><hr><h3>Registrieren</h3><form id="regForm"><input name="name" placeholder="Name" required><input name="phone" placeholder="Telefon"><input name="email" placeholder="E-Mail" required><input name="password" type="password" placeholder="Passwort" required><button>Registrieren</button></form></div></div>`}
+function appHtml(){const ap=[["dashboard","Dashboard"],["jobs","Aufträge"],["assignments","Einsätze"],["schedule","Dienstplan"],["adminhours","Stunden Admin"],["livewage","Live-Lohn"],["tracking","Live-Tracking"],["maps","Karten"],["leave","Urlaub/Krank"],["employees","Mitarbeiter"],["payroll","Lohn"],["routes","Fahrpläne"],["chat","Chat"],["profile","Profil"]],ep=[["dashboard","Dashboard"],["jobs","Offene Einsätze"],["assignments","Meine Einsätze"],["schedule","Mein Dienstplan"],["timesheets","Meine Stunden"],["leave","Mein Urlaub/Krank"],["payroll","Lohn"],["routes","Fahrpläne"],["chat","Chat"],["profile","Profil"]],pages=admin()?ap:ep;return `<div class="app"><aside class="side ${state.openSide?'open':''}"><div class="logo">SXG<small>Sicherheit & Service GmbH</small></div><div class="nav">${pages.map(p=>`<button class="${state.page===p[0]?'active':''}" onclick="setPage('${p[0]}')">${p[1]}</button>`).join("")}</div><div class="userbox"><b>${esc(state.profile.full_name)}</b><br><small>${admin()?'Admin':'Mitarbeiter'}</small><br><br><button class="secondary" onclick="askPush()">Push aktivieren</button></div></aside><main class="main"><div class="top"><button class="mobile secondary" onclick="state.openSide=!state.openSide;render()">☰</button><div><h1>${pages.find(p=>p[0]===state.page)?.[1]||"Portal"}</h1></div><button class="secondary" onclick="sxgSafeRefresh()">Aktualisieren</button><button class="secondary" onclick="logout()">Abmelden</button></div>${contentHtml()}</main>${modalHtml()}</div>`}
 function contentHtml(){if(state.page==="dashboard")return dashboardHtml();if(state.page==="jobs")return jobsHtml();if(state.page==="assignments")return assignmentsHtml();if(state.page==="schedule")return scheduleHtml();if(state.page==="timesheets")return timesHtml(false);if(state.page==="adminhours")return timesHtml(true);if(state.page==="livewage")return liveWageHtml();if(state.page==="tracking")return trackingHtml();if(state.page==="maps")return mapsHtml();if(state.page==="leave")return leaveHtml();if(state.page==="employees")return employeesHtml();if(state.page==="payroll")return payrollHtml();if(state.page==="routes")return routesHtml();if(state.page==="chat")return chatHtml();if(state.page==="profile")return profileHtml();return""}
 function dashboardHtml(){if(admin())return `<section class="panel"><div class="toolbar"><button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button><h2>${monthKey()}</h2><button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button></div></section><div class="cards"><div class="card"><h3>Mitarbeiter</h3><h1>${state.profiles.length}</h1></div><div class="card"><h3>Aufträge</h3><h1>${state.jobs.length}</h1></div><div class="card"><h3>Monatsstunden</h3><h1>${state.timesheets.filter(t=>isInSelectedMonth(rowDate(t))).reduce((s,t)=>s+Number(t.hours_worked||t.hours||0),0).toFixed(1)}</h1></div><div class="card"><h3>Trackingpunkte</h3><h1>${state.locations.length}</h1></div><div class="card"><h3>Abgeschlossene Einsätze</h3><h1>${state.assignments.filter(a=>assignmentStatus(a)==="abgeschlossen"||isJobExpired(jobOf(a.job_id)||{})).length}</h1></div></div>`;let hrs=myHours(),money=myMoney(),pct=Math.min(100,hrs/160*100);return `<section class="panel"><div class="toolbar"><button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button><h2>${monthKey()}</h2><button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button></div></section><div class="cards"><div class="card"><h3>Meine Stunden/Lohn</h3><div class="donut" style="--p:${pct}%"><div><b>${hrs.toFixed(1)} Std.</b><br>${money.toFixed(2)} €</div></div></div><div class="card"><h3>Meine Einsätze</h3><h1>${myAssignments().length}</h1></div></div>`}
 function jobsHtml(){const list=state.jobs.filter(j=>admin()||((j.status||"open")==="open"&&!isJobExpired(j)&&(!jobDate(j)||jobDate(j)>=today())));return `<section class="panel"><div class="toolbar"><h2>${admin()?'Aufträge verwalten':'Offene Einsätze'}</h2>${admin()?`<button onclick="openModal('job')">+ Auftrag</button> <button onclick="openModal('repeat')">Wiederholen</button>`:""}</div><div class="table">${list.map(j=>{let c=assignedCount(j.id),max=Number(j.needed_employees||1),full=c>=max,mine=isAssigned(j.id);return `<div class="row"><div><b>${esc(j.title)}</b><br>${esc(j.client)} · ${esc(j.location)}<br>${esc(j.address||"")}<br>${esc(jobDate(j))} ${esc(j.start_time)}-${esc(j.end_time)}<br>${!admin()&&checkInBlockReason(j)?`<small>${esc(checkInBlockReason(j))}</small><br>`:""}${admin()?`<b>Eingetragen:</b> ${state.assignments.filter(a=>String(a.job_id)===String(j.id)).map(a=>`${esc(nameOf(a.profile_id||a.employee_id))} <button class='danger' onclick="unassignJob(${j.id},'${a.profile_id||a.employee_id}')">x</button>`).join(" ")||"niemand"}<br><b>Reserve:</b> ${state.waitlist.filter(w=>String(w.job_id)===String(j.id)).map(w=>`${esc(nameOf(w.profile_id))} <button class='secondary' onclick="promoteWaitlist(${j.id},'${w.profile_id}')">einsetzen</button>`).join(" ")||"niemand"}`:""}</div><span>${c}/${max}</span><span class="badge ${full?'warn':'ok'}">${full?'voll':'frei'}</span><div>${admin()?`<button class="secondary" onclick="openModal('assign',${j.id})">Eintragen</button> <button class="secondary" onclick="openJobMapById(${j.id})">Karte</button> <button class="secondary" onclick="openModal('job',${j.id})">Bearbeiten</button> <button class="danger" onclick="delJob(${j.id})">Löschen</button>`:mine?`<button class="ok" onclick="checkIn(${j.id})" ${canEmployeeCheckIn(j)?"":"disabled"}>Check-in</button> <button class="secondary" onclick="unassignJob(${j.id})">Austragen</button>`:`<button onclick="assignJob(${j.id})" ${full?'disabled':''}>Eintragen</button> ${full?(isWaitlisted(j.id)?`<button class="secondary" onclick="removeWaitlist(${j.id})">Reserve entfernen</button>`:`<button class="secondary" onclick="joinWaitlist(${j.id})">Reserve</button>`):``}`}</div></div>`}).join("")||`<div class="empty">Keine Einsätze</div>`}</div></section>`}
@@ -523,7 +543,7 @@ function routesHtml(){const myJobIds=myAssignments().map(a=>String(a.job_id));co
 function chatHtml(){const rows=state.chats.filter(c=>admin()||c.from_profile_id===myId()||c.to_profile_id===myId());return `<section class="panel"><h2>Chat</h2><form class="form" id="chatForm"><select name="to_profile_id">${state.profiles.filter(p=>p.id!==myId()).map(p=>`<option value="${p.id}">${esc(p.full_name||p.email)}</option>`).join("")}</select><input name="body" placeholder="Nachricht"><button>Senden</button></form><br><div class="table">${rows.map(c=>`<div class="row"><div><b>${esc(nameOf(c.from_profile_id))} → ${esc(nameOf(c.to_profile_id))}</b><br>${esc(c.body)}</div><span>${esc(c.created_at||"")}</span><span></span><span></span></div>`).join("")||`<div class="empty">Keine Nachrichten</div>`}</div></section>`}
 function profileHtml(){return `<section class="panel"><h2>Mein Profil</h2><div class="cards"><div class="card"><b>${esc(state.profile.full_name)}</b><p>${esc(state.profile.email)}</p><p>Bewacher-ID: ${esc(state.profile.guard_id||"—")}<br>Stundenlohn: ${esc(state.profile.hourly_rate||0)} €/h</p><button onclick="openModal('profile','${state.profile.id}')">Profil bearbeiten</button></div><div class="card"><h3>Push</h3><button onclick="askPush()">Push aktivieren</button></div></div></section>`}
 function modalHtml(){if(!state.modal)return"";const{type,id}=state.modal;
-if(type==="wagedetail"){const p=state.profiles.find(x=>x.id===id)||{},s=employeeMonthSummary(id),days=dayBreakdown(id),pct=Math.min(100,s.hours/160*100);return modal("Live-Lohn: "+esc(p.full_name||p.email),`<div class="cards"><div class="card"><h3>Monat</h3><h1>${monthKey()}</h1></div><div class="card"><h3>Gesamtstunden</h3><h1>${s.hours.toFixed(1)} h</h1></div><div class="card"><h3>Gesamtverdienst</h3><h1>${s.total.toFixed(2)} €</h1></div><div class="card"><h3>Zuschläge</h3><h1>${s.premium.toFixed(2)} €</h1></div><div class="card"><h3>Prämien</h3><h1>${s.bonus.toFixed(2)} €</h1></div></div><br><div class="card"><h3>Kreisdiagramm</h3><div class="donut" style="--p:${pct}%"><div><b>${s.hours.toFixed(1)} Std.</b><br>${s.total.toFixed(2)} €</div></div></div><br><h3>Tagesdetails</h3><div class="table">${days.map(d=>`<div class="row"><div><b>${esc(d.date)}</b><br>${d.items.map(t=>esc(jobOf(t.job_id)?.title||t.activity||"Stunden")).join("<br>")}</div><span>${d.hours.toFixed(1)} h</span><span>${(d.wage+d.premium).toFixed(2)} €<br><small>inkl. ${d.premium.toFixed(2)} € Zuschlag</small></span><span></span></div>`).join("")||`<div class="empty">Keine Stunden in diesem Monat</div>`}</div><br><h3>Prämien</h3><div class="table">${s.bonuses.map(b=>`<div class="row"><div><b>${esc(b.reason||"Prämie")}</b><br>${esc(b.created_at||"")}</div><span></span><span>${Number(b.amount||0).toFixed(2)} €</span><span></span></div>`).join("")||`<div class="empty">Keine Prämien in diesem Monat</div>`}</div>`)}
+if(type==="wagedetail"){const p=state.profiles.find(x=>x.id===id)||{},s=employeeMonthSummary(id),days=dayBreakdown(id),pct=Math.min(100,s.hours/160*100);return modal("Live-Lohn: "+esc(p.full_name||p.email),`<div class="cards"><div class="card"><h3>Monat</h3><h1>${monthKey()}</h1></div><div class="card"><h3>Gesamtstunden</h3><h1>${s.hours.toFixed(1)} h</h1></div><div class="card"><h3>Gesamtverdienst</h3><h1>${s.total.toFixed(2)} €</h1></div><div class="card"><h3>Zuschläge</h3><h1>${s.premium.toFixed(2)} €</h1></div><div class="card"><h3>Prämien</h3><h1>${s.bonus.toFixed(2)} €</h1></div></div><br><div class="card"><h3>Kreisdiagramm</h3><div class="donut" style="--p:${pct}%"><div><b>${s.hours.toFixed(1)} Std.</b><br>${s.total.toFixed(2)} €</div></div></div><br><h3>Tagesdetails</h3><div class="table">${days.map(d=>`<div class="row"><div><b>${esc(d.date)}</b><br>${d.items.map(t=>esc(jobOf(t.job_id)?.title||t.activity||"Stunden")).join("<br>")}</div><span>${d.hours.toFixed(1)} h</span><span>${(d.wage+d.premium).toFixed(2)} €<br><small>inkl. ${d.premium.toFixed(2)} € Zuschlag</small></span><span></span></div>`).join("")||`<div class="empty">Keine Stunden in diesem Monat</div>`}</div><br><h3>Prämien</h3><div class="table">${s.bonuses.map(b=>`<div class="row"><div><b>${esc(b.reason||"Prämie")}</b><br>${esc(b.created_at||"")}</div><span></span><span>${Number(b.amount||0).toFixed(2)} €</span><span>${admin()?`<button class="secondary" onclick="openModal(\'bonus\',${b.id})">Bearbeiten</button> <button class="danger" onclick="delBonus(${b.id})">Löschen</button>`:""}</span></div>`).join("")||`<div class="empty">Keine Prämien in diesem Monat</div>`}</div>`)}
 if(type==="job"){const j=jobOf(id)||{};return modal("Auftrag",`<form class="form" id="jobForm"><input type="hidden" name="id" value="${esc(j.id||"")}"><input name="title" placeholder="Titel" value="${esc(j.title||"")}"><input name="client" placeholder="Kunde" value="${esc(j.client||"")}"><input name="location" placeholder="Standort" value="${esc(j.location||"")}"><input name="address" placeholder="Adresse" value="${esc(j.address||"")}"><input name="lat" placeholder="Latitude" value="${esc(j.lat||"")}"><input name="lng" placeholder="Longitude" value="${esc(j.lng||"")}"><input name="geo_radius_m" type="number" placeholder="Radius Meter" value="${esc(j.geo_radius_m||1000)}"><label class="full"><input type="checkbox" name="require_location_tracking" ${j.require_location_tracking===false?"":"checked"}> GPS/Radius für diesen Einsatz aktiv</label><input type="date" name="job_date" value="${esc(jobDate(j))}"><input name="start_time" placeholder="Start" value="${esc(j.start_time||"")}"><input name="end_time" placeholder="Ende" value="${esc(j.end_time||"")}"><input type="number" name="needed_employees" placeholder="Mitarbeiter gesucht" value="${esc(j.needed_employees||1)}"><input name="status" value="${esc(j.status||"open")}"><textarea class="full" name="notes" placeholder="Hinweise">${esc(j.notes||"")}</textarea><button>Speichern</button></form>`)}
 if(type==="assign")return modal("Mitarbeiter eintragen",`<div class="table">${state.profiles.map(p=>`<div class="row"><b>${esc(p.full_name||p.email)}</b><span>${esc(p.role)}</span><span></span><button onclick="assignJob(${id},'${p.id}')">Eintragen</button></div>`).join("")}</div>`);
 if(type==="time"){const t=state.timesheets.find(x=>String(x.id)===String(id))||{};return modal("Stunden",`<form class="form" id="timeForm"><input type="hidden" name="id" value="${esc(t.id||"")}">${admin()?`<select name="profile_id">${state.profiles.map(p=>`<option value="${p.id}" ${(t.profile_id||myId())===p.id?"selected":""}>${esc(p.full_name||p.email)}</option>`).join("")}</select>`:""}<select name="job_id"><option value="">Kein Auftrag</option>${state.jobs.map(j=>`<option value="${j.id}" ${String(t.job_id)===String(j.id)?"selected":""}>${esc(j.title)}</option>`).join("")}</select><input type="date" name="work_date" value="${esc(t.work_date||"")}"><input name="start_time" placeholder="Start" value="${esc(t.start_time||"")}"><input name="end_time" placeholder="Ende" value="${esc(t.end_time||"")}"><input type="number" name="break_minutes" placeholder="Pause Minuten, wird abgezogen" value="${esc(t.break_minutes||0)}"><input type="number" step="0.25" name="hours_worked" placeholder="Stunden werden aus Start/Ende/Pause berechnet" value="${esc(t.hours_worked||t.hours||"")}"><input name="location" placeholder="Standort" value="${esc(t.location||"")}"><input name="activity" placeholder="Tätigkeit" value="${esc(t.activity||"")}"><textarea class="full" name="description" placeholder="Beschreibung">${esc(t.description||"")}</textarea>${admin()?`<label class="full"><input type="checkbox" name="approved" ${t.approved?"checked":""}> freigegeben</label>`:""}<button>Speichern</button></form>`)}
@@ -725,6 +745,409 @@ window.startTracking = function(jobId){
     }
   },()=>{},{enableHighAccuracy:true,maximumAge:10000,timeout:15000});
 };
+
+
+/* SXG v9 Admin Filter + Route Fix */
+window.sxgPid = function(a){return a?.profile_id||a?.employee_id||""};
+window.sxgOpenAttendance = function(pid,jobId=null){
+  return state.attendance.find(a=>window.sxgPid(a)===pid && !a.check_out && !a.clock_out && (!jobId||String(a.job_id)===String(jobId)));
+};
+window.sxgSelectedEmployee = function(){
+  if(!state.adminEmployeeFilter)state.adminEmployeeFilter="";
+  return state.adminEmployeeFilter;
+};
+window.sxgEmployeeSelect = function(){
+  if(!admin())return "";
+  return `<section class="panel"><div class="toolbar"><b>Mitarbeiter filtern</b><select onchange="state.adminEmployeeFilter=this.value;render()"><option value="">Alle Mitarbeiter</option>${state.profiles.map(p=>`<option value="${p.id}" ${state.adminEmployeeFilter===p.id?"selected":""}>${esc(p.full_name||p.email)}</option>`).join("")}</select></div></section>`;
+};
+window.sxgFilterByEmployee = function(rows, getter){
+  const pid=window.sxgSelectedEmployee();
+  if(!admin()||!pid)return rows;
+  return rows.filter(x=>getter(x)===pid);
+};
+window.sxgJobStart = function(j){
+  const d=jobDate(j)||j?.start_date||"";
+  if(!d)return null;
+  const dt=new Date(`${d}T${String(j?.start_time||"00:00").slice(0,5)}:00`);
+  return isNaN(dt.getTime())?null:dt;
+};
+window.sxgJobEnd = function(j){
+  const d=jobDate(j)||j?.start_date||"";
+  if(!d)return null;
+  const dt=new Date(`${d}T${String(j?.end_time||"23:59").slice(0,5)}:00`);
+  const st=window.sxgJobStart(j);
+  if(st&&dt<st)dt.setDate(dt.getDate()+1);
+  return isNaN(dt.getTime())?null:dt;
+};
+window.sxgJobExpired = function(j){const e=window.sxgJobEnd(j);return !!e&&Date.now()>e.getTime()};
+window.sxgCheckInReason = function(j){
+  const st=window.sxgJobStart(j), en=window.sxgJobEnd(j), now=Date.now();
+  if(en&&now>en.getTime())return "Der Einsatz ist bereits beendet.";
+  if(st&&now>st.getTime()+15*60*1000)return "Check-in ist nur bis 15 Minuten nach Beginn möglich.";
+  return "";
+};
+window.sxgMinutes = function(a,b){const A=new Date(a).getTime(),B=new Date(b).getTime();return (!A||!B||B<A)?0:(B-A)/60000};
+window.sxgIsoDate = function(x){try{return new Date(x).toISOString().slice(0,10)}catch(e){return today()}};
+window.sxgIsoTime = function(x){try{return new Date(x).toTimeString().slice(0,5)}catch(e){return ""}};
+
+window.sxgFallbackTimesheet = async function(att,outIso){
+  const inIso=att.check_in||att.clock_in;
+  if(!inIso||!outIso)return;
+  const pid=window.sxgPid(att)||myId();
+  if(state.timesheets.some(t=>String(t.attendance_id||"")===String(att.id)))return;
+  const j=jobOf(att.job_id)||{};
+  const hours=Math.max(0,Math.round((window.sxgMinutes(inIso,outIso)/60)*10000)/10000);
+  await sb.from("timesheets").insert({
+    profile_id:pid,employee_id:pid,job_id:att.job_id||null,work_date:window.sxgIsoDate(inIso),
+    start_time:window.sxgIsoTime(inIso),end_time:window.sxgIsoTime(outIso),break_minutes:0,
+    location:j.location||j.address||"",activity:j.title||"Einsatz",
+    description:"Automatisch aus Check-in/Check-out erstellt",hours_worked:hours,hours:hours,
+    approved:false,status:"pending",attendance_id:att.id
+  });
+};
+window.checkOut = async function(){
+  await loadAll();
+  const open=window.sxgOpenAttendance(myId());
+  if(!open)return msg("Kein offener Check-in.");
+  const out=new Date().toISOString();
+  const r=await sb.from("attendance").update({check_out:out,clock_out:out,present:false}).eq("id",open.id);
+  if(r.error)return msg(r.error.message);
+  stopTracking();
+  await loadAll();
+  if(!state.timesheets.some(t=>String(t.attendance_id||"")===String(open.id))){
+    await window.sxgFallbackTimesheet(open,out);
+    await loadAll();
+  }
+  state.page="assignments";
+  render();
+};
+window.checkIn = async function(jobId){
+  await loadAll();
+  const j=jobOf(jobId);
+  if(!j)return msg("Einsatz nicht gefunden.");
+  const reason=window.sxgCheckInReason(j);
+  if(reason)return msg(reason);
+  if(window.sxgOpenAttendance(myId()))return msg("Du bist bereits eingecheckt. Bitte erst auschecken.");
+  if(!navigator.geolocation)return msg("GPS nicht verfügbar.");
+  if(j.require_location_tracking!==false && (!j.lat||!j.lng))return msg("GPS-Daten fehlen. Admin muss Adresse/Koordinaten eintragen oder GPS deaktivieren.");
+  navigator.geolocation.getCurrentPosition(async pos=>{
+    const lat=pos.coords.latitude,lng=pos.coords.longitude;
+    if(j.require_location_tracking!==false){
+      const dist=hav(lat,lng,Number(j.lat),Number(j.lng));
+      const radius=Number(j.geo_radius_m||1000);
+      if(dist>radius)return msg("Du bist zu weit weg. Entfernung: "+Math.round(dist)+" m / erlaubt: "+radius+" m");
+    }
+    const iso=new Date().toISOString();
+    const r=await sb.from("attendance").insert({profile_id:myId(),employee_id:myId(),job_id:jobId,check_in:iso,clock_in:iso,lat,lng,present:true});
+    if(r.error)return msg(r.error.message);
+    startTracking(jobId);
+    await loadAll();render();
+  },()=>msg("GPS erlauben."),{enableHighAccuracy:true,timeout:12000,maximumAge:0});
+};
+window.adminClockIn = async function(e){
+  e.preventDefault();
+  const f=new FormData(e.target), pid=f.get("profile_id"), jobId=f.get("job_id"), dt=f.get("clock_in_at");
+  if(!pid||!jobId||!dt)return msg("Mitarbeiter, Auftrag und Zeit auswählen.");
+  await loadAll();
+  if(window.sxgOpenAttendance(pid))return msg("Dieser Mitarbeiter ist bereits eingecheckt.");
+  const iso=new Date(dt).toISOString(), j=jobOf(jobId)||{};
+  const r=await sb.from("attendance").insert({profile_id:pid,employee_id:pid,job_id:jobId,check_in:iso,clock_in:iso,present:true,lat:j.lat||null,lng:j.lng||null});
+  if(r.error)return msg(r.error.message);
+  closeModal();await loadAll();render();
+};
+window.adminClockOut = async function(e){
+  e.preventDefault();
+  const f=new FormData(e.target), id=f.get("attendance_id"), dt=f.get("clock_out_at");
+  if(!id||!dt)return msg("Offenen Check-in und Zeit auswählen.");
+  await loadAll();
+  const att=state.attendance.find(a=>String(a.id)===String(id));
+  if(!att)return msg("Check-in nicht gefunden.");
+  const iso=new Date(dt).toISOString();
+  const r=await sb.from("attendance").update({check_out:iso,clock_out:iso,present:false}).eq("id",id);
+  if(r.error)return msg(r.error.message);
+  await loadAll();
+  if(!state.timesheets.some(t=>String(t.attendance_id||"")===String(id))){
+    await window.sxgFallbackTimesheet(att,iso);
+    await loadAll();
+  }
+  closeModal();render();
+};
+
+window.delRoute = async function(id){
+  if(confirm("Fahrplan wirklich löschen?")){
+    const r=await sb.from("route_plans").delete().eq("id",id);
+    if(r.error)return msg(r.error.message);
+    await loadAll();render();
+  }
+};
+window.saveRoute = async function(e){
+  e.preventDefault();
+  const f=new FormData(e.target), id=f.get("id"), jobId=f.get("job_id");
+  const ids=[...document.querySelectorAll(".routeEmp:checked")].map(x=>x.value);
+  const row={job_id:jobId,driver_profile_id:f.get("driver_profile_id"),passenger_profile_ids:ids,meeting_time:f.get("meeting_time"),meeting_point:f.get("meeting_point"),notes:f.get("notes"),created_by:myId(),updated_at:new Date().toISOString()};
+  const r=id?await sb.from("route_plans").update(row).eq("id",id):await sb.from("route_plans").insert(row);
+  if(r.error)return msg(r.error.message);
+  closeModal();await loadAll();render();
+};
+
+window.jobsHtml = function(){
+  let list=state.jobs.filter(j=>admin()||((j.status||"open")==="open"&&!window.sxgJobExpired(j)&&(!jobDate(j)||jobDate(j)>=today())));
+  const fp=window.sxgSelectedEmployee();
+  if(admin()&&fp){
+    const ids=state.assignments.filter(a=>window.sxgPid(a)===fp).map(a=>String(a.job_id));
+    list=list.filter(j=>ids.includes(String(j.id)));
+  }
+  return `${window.sxgEmployeeSelect()}<section class="panel"><div class="toolbar"><h2>${admin()?'Aufträge verwalten':'Offene Einsätze'}</h2>${admin()?`<button onclick="openModal('job')">+ Auftrag</button> <button onclick="openModal('repeat')">Wiederholen</button>`:""}</div><div class="table">${list.map(j=>{
+    const c=assignedCount(j.id), max=Number(j.needed_employees||1), full=c>=max, mine=isAssigned(j.id);
+    const open=window.sxgOpenAttendance(myId(),j.id);
+    return `<div class="row"><div><b>${esc(j.title)}</b><br>${esc(j.client)} · ${esc(j.location)}<br>${esc(j.address||"")}<br>${esc(jobDate(j))} ${esc(j.start_time)}-${esc(j.end_time)}<br>${admin()?`<b>Eingetragen:</b> ${state.assignments.filter(a=>String(a.job_id)===String(j.id)).map(a=>`${esc(nameOf(window.sxgPid(a)))} <button class='danger' onclick="unassignJob(${j.id},'${window.sxgPid(a)}')">x</button>`).join(" ")||"niemand"}`:""}</div><span>${c}/${max}</span><span class="badge ${full?'warn':'ok'}">${full?'voll':'frei'}</span><div>${admin()?`<button class="secondary" onclick="openModal('assign',${j.id})">Eintragen</button> <button class="secondary" onclick="openModal('job',${j.id})">Bearbeiten</button> <button class="danger" onclick="delJob(${j.id})">Löschen</button>`:open?`<button class="ok" onclick="checkOut()">Check-out</button>`:mine?`<button class="ok" onclick="checkIn(${j.id})">Check-in</button> <button class="secondary" onclick="unassignJob(${j.id})">Austragen</button>`:`<button onclick="assignJob(${j.id})" ${full?'disabled':''}>Eintragen</button>`}</div></div>`;
+  }).join("")||`<div class="empty">Keine Einsätze</div>`}</div></section>`;
+};
+
+window.timesHtml = function(all){
+  let rows=all&&admin()?state.timesheets:myTimes();
+  rows=window.sxgFilterByEmployee(rows,t=>window.sxgPid(t));
+  return `${all&&admin()?window.sxgEmployeeSelect():""}<section class="panel"><div class="toolbar"><h2>${all?'Alle Stunden':'Meine Stunden'}</h2><button onclick="openModal('time')">+ Stunden</button>${admin()?`<button onclick="openModal('adminClockIn')">+ Mitarbeiter einchecken</button> <button onclick="openModal('adminClockOut')">Mitarbeiter auschecken</button> <button onclick="openModal('bonus')">+ Prämie</button> <button onclick="openModal('premium')">+ Zuschlag</button>`:""}</div><div class="table">${rows.map(t=>`<div class="row"><div><b>${esc(all?nameOf(window.sxgPid(t)):"Meine Stunden")}</b><br>${esc(t.work_date)} ${esc(t.start_time)}-${esc(t.end_time)} · ${esc(t.location)}<br>${esc(t.activity)} ${esc(t.description)}</div><span>${Number(t.hours_worked||t.hours||0).toFixed(4)} Std.</span><span class="badge ${t.approved?'ok':'warn'}">${esc(t.status||"pending")}</span><div><button class="secondary" onclick="openModal('time',${t.id})">Bearbeiten</button>${admin()?` <button class="danger" onclick="delTime(${t.id})">Löschen</button>`:""}</div></div>`).join("")||`<div class="empty">Keine Stunden</div>`}</div></section>`;
+};
+
+window.scheduleHtml = function(){
+  let rows=admin()?state.assignments:myAssignments();
+  rows=window.sxgFilterByEmployee(rows,a=>window.sxgPid(a));
+  const items=rows.map(a=>({a,j:jobOf(a.job_id)})).filter(x=>x.j&&jobDate(x.j));
+  let leaveRows=state.leaves.filter(l=>(l.status==="approved"||l.approved===true));
+  leaveRows=window.sxgFilterByEmployee(leaveRows,l=>window.sxgPid(l));
+  if(!admin())leaveRows=leaveRows.filter(l=>window.sxgPid(l)===myId());
+  const last=new Date(state.year,state.month+1,0), days=[];
+  for(let i=1;i<=last.getDate();i++)days.push(new Date(state.year,state.month,i).toISOString().slice(0,10));
+  return `${admin()?window.sxgEmployeeSelect():""}<section class="panel"><div class="toolbar"><button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button><h2>${state.month+1}/${state.year}</h2><button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button></div><div class="calendar">${days.map(d=>{
+    const jobs=items.filter(x=>jobDate(x.j)===d);
+    const abs=leaveRows.filter(l=>d>=String(l.start_date||"")&&d<=String(l.end_date||""));
+    return `<div class="day"><b>${d.slice(8,10)}.${d.slice(5,7)}</b>${jobs.map(x=>`<span class="mini">${esc(x.j.start_time)} ${esc(x.j.title)} ${admin()?`· ${esc(nameOf(window.sxgPid(x.a)))}`:""}</span>`).join("")}${abs.map(l=>`<span class="mini">Abwesenheit: ${esc(l.leave_type||l.type||"Urlaub/Krank")} ${admin()?`· ${esc(nameOf(window.sxgPid(l)))}`:""}</span>`).join("")}</div>`;
+  }).join("")}</div></section>`;
+};
+
+window.assignmentsHtml = function(){
+  let baseRows=admin()?state.assignments:myAssignments();
+  baseRows=window.sxgFilterByEmployee(baseRows,a=>window.sxgPid(a));
+  let timeRows=state.timesheets.filter(t=>admin()||window.sxgPid(t)===myId()).map(t=>({job_id:t.job_id,profile_id:window.sxgPid(t),timesheet_id:t.id,fromTimesheet:true}));
+  timeRows=window.sxgFilterByEmployee(timeRows,a=>window.sxgPid(a));
+  const allRows=[...baseRows,...timeRows], seen=new Set();
+  const unique=allRows.filter(a=>{const k=String(a.job_id||"none")+"-"+window.sxgPid(a)+"-"+String(a.timesheet_id||"assignment");if(seen.has(k))return false;seen.add(k);return true});
+  const current=baseRows.filter(a=>window.sxgOpenAttendance(window.sxgPid(a),a.job_id)||(!window.sxgJobExpired(jobOf(a.job_id)||{})&&!state.timesheets.some(t=>window.sxgPid(t)===window.sxgPid(a)&&String(t.job_id||"")===String(a.job_id||""))));
+  const history=unique.filter(a=>a.fromTimesheet||window.sxgJobExpired(jobOf(a.job_id)||{})||state.timesheets.some(t=>window.sxgPid(t)===window.sxgPid(a)&&String(t.job_id||"")===String(a.job_id||"")));
+  const row=a=>{
+    const pid=window.sxgPid(a),j=jobOf(a.job_id)||{},open=window.sxgOpenAttendance(pid,a.job_id);
+    const ts=state.timesheets.find(t=>String(t.id||"")===String(a.timesheet_id||"")||(window.sxgPid(t)===pid&&String(t.job_id||"")===String(a.job_id||"")));
+    const actual=ts?`${esc(ts.work_date||"")} ${esc(ts.start_time||"")} - ${esc(ts.end_time||"")}`:"";
+    return `<div class="row"><div><b>${esc(j.title||ts?.activity||"Einsatz")}</b><br>${esc(j.location||ts?.location||"")} ${j.address?`· ${esc(j.address)}`:""}<br>${j.id?`Plan: ${esc(jobDate(j))} ${esc(j.start_time||"")} - ${esc(j.end_time||"")}<br>`:""}${actual?`Tatsächlich: ${actual}<br>`:""}${admin()?`Mitarbeiter: <b>${esc(nameOf(pid))}</b>`:""}</div><span>${ts?Number(ts.hours_worked||ts.hours||0).toFixed(4)+" h":""}</span><span class="badge ${open?'warn':ts?'ok':'warn'}">${open?'läuft':ts?'abgeschlossen':'aktuell'}</span><span>${open&&!admin()?`<button class="ok" onclick="checkOut()">Check-out</button>`:""}${open&&admin()?`<button class="ok" onclick="openModal('adminClockOut')">Check-out</button>`:""}${ts&&admin()?` <button class="secondary" onclick="openModal('time',${ts.id})">Stunden bearbeiten</button>`:""}</span></div>`;
+  };
+  return `${admin()?window.sxgEmployeeSelect():""}<section class="panel"><h2>${admin()?'Einsätze Übersicht':'Meine Einsätze'}</h2><h3>Aktuell</h3><div class="table">${current.map(row).join("")||`<div class="empty">Keine aktuellen Einsätze</div>`}</div><br><h3>Einsatz-Historie</h3><div class="table">${history.map(row).join("")||`<div class="empty">Noch keine abgeschlossenen Einsätze</div>`}</div></section>`;
+};
+
+const sxgOldModalHtml = modalHtml;
+window.modalHtml = modalHtml = function(){
+  if(!state.modal)return "";
+  const {type,id}=state.modal;
+  if(type==="adminClockIn")return modal("Mitarbeiter einchecken",`<form class="form" id="adminClockInForm"><select name="profile_id">${state.profiles.map(p=>`<option value="${p.id}">${esc(p.full_name||p.email)}</option>`).join("")}</select><select name="job_id">${state.jobs.map(j=>`<option value="${j.id}">${esc(j.title)} · ${esc(jobDate(j))}</option>`).join("")}</select><input name="clock_in_at" type="datetime-local"><button>Einchecken</button></form>`);
+  if(type==="adminClockOut"){const rows=state.attendance.filter(a=>!a.check_out&&!a.clock_out);return modal("Mitarbeiter auschecken",`<form class="form" id="adminClockOutForm"><select name="attendance_id">${rows.map(a=>`<option value="${a.id}">${esc(nameOf(window.sxgPid(a)))} · ${esc(jobOf(a.job_id)?.title||"Einsatz")}</option>`).join("")}</select><input name="clock_out_at" type="datetime-local"><button>Auschecken</button></form>${rows.length?``:`<div class="empty">Keine offenen Check-ins</div>`}`)}
+  if(type==="route"){const r=state.routes.find(x=>String(x.id)===String(id))||{};return modal("Fahrplan",`<form class="form" id="routeForm"><input type="hidden" name="id" value="${esc(r.id||"")}"><select name="job_id">${state.jobs.map(j=>`<option value="${j.id}" ${String(r.job_id)===String(j.id)?"selected":""}>${esc(j.title)}</option>`).join("")}</select><select name="driver_profile_id">${state.profiles.map(p=>`<option value="${p.id}" ${r.driver_profile_id===p.id?"selected":""}>${esc(p.full_name||p.email)}</option>`).join("")}</select><input name="meeting_time" placeholder="Uhrzeit" value="${esc(r.meeting_time||"")}"><input name="meeting_point" placeholder="Treffpunkt" value="${esc(r.meeting_point||"")}"><div class="full">${state.profiles.map(p=>`<label><input class="routeEmp" type="checkbox" value="${p.id}" ${(r.passenger_profile_ids||[]).includes(p.id)?"checked":""}> ${esc(p.full_name||p.email)}</label><br>`).join("")}</div><textarea class="full" name="notes" placeholder="Infos">${esc(r.notes||"")}</textarea><button>Speichern</button></form>`)}
+  return sxgOldModalHtml();
+};
+window.routesHtml = routesHtml = function(){
+  const myJobIds=myAssignments().map(a=>String(a.job_id));
+  let rows=admin()?state.routes:state.routes.filter(r=>myJobIds.includes(String(r.job_id))&&((r.passenger_profile_ids||[]).includes(myId())||r.driver_profile_id===myId()));
+  return `<section class="panel"><div class="toolbar"><h2>Fahrpläne</h2>${admin()?`<button onclick="openModal('route')">+ Fahrplan</button>`:""}</div><div class="table">${rows.map(r=>`<div class="row"><div><b>${esc(jobOf(r.job_id)?.title||"Einsatz")}</b><br>Fahrer: ${esc(nameOf(r.driver_profile_id))}<br>Treffpunkt: ${esc(r.meeting_point)} · ${esc(r.meeting_time)}<br>${esc(r.notes)}</div><span>${(r.passenger_profile_ids||[]).map(nameOf).join(", ")}</span><span class="badge ok">Fahrplan</span><span>${admin()?`<button class="secondary" onclick="openModal('route',${r.id})">Bearbeiten</button> <button class="danger" onclick="delRoute(${r.id})">Löschen</button>`:""}</span></div>`).join("")||`<div class="empty">Keine Fahrpläne</div>`}</div></section>`;
+};
+
+
+/* SXG v10 Safety/Admin Patch */
+window.sxgPid = window.sxgPid || function(a){return a?.profile_id||a?.employee_id||""};
+
+window.sxgOpenAttendance = function(pid,jobId=null){
+  return state.attendance.find(a =>
+    window.sxgPid(a)===pid &&
+    !a.check_out &&
+    !a.clock_out &&
+    (!jobId || String(a.job_id)===String(jobId))
+  );
+};
+
+window.sxgJobStart = window.sxgJobStart || function(j){
+  const d=jobDate(j)||j?.start_date||"";
+  if(!d)return null;
+  const dt=new Date(`${d}T${String(j?.start_time||"00:00").slice(0,5)}:00`);
+  return isNaN(dt.getTime())?null:dt;
+};
+
+window.sxgJobEnd = window.sxgJobEnd || function(j){
+  const d=jobDate(j)||j?.start_date||"";
+  if(!d)return null;
+  const dt=new Date(`${d}T${String(j?.end_time||"23:59").slice(0,5)}:00`);
+  const st=window.sxgJobStart(j);
+  if(st&&dt<st)dt.setDate(dt.getDate()+1);
+  return isNaN(dt.getTime())?null:dt;
+};
+
+window.sxgAutoCheckoutExpired = async function(){
+  if(!admin())return;
+  await loadAll();
+  const now=Date.now();
+  for(const a of state.attendance.filter(x=>!x.check_out&&!x.clock_out)){
+    const j=jobOf(a.job_id);
+    if(!j)continue;
+    const end=window.sxgJobEnd(j);
+    if(!end)continue;
+    const outMs=end.getTime()+15*60*1000;
+    if(now>outMs){
+      const outIso=new Date(outMs).toISOString();
+      await sb.from("attendance").update({
+        check_out:outIso,
+        clock_out:outIso,
+        present:false,
+        auto_checkout:true
+      }).eq("id",a.id);
+    }
+  }
+};
+
+window.sxgSafeRefresh = async function(){
+  if(admin())await window.sxgAutoCheckoutExpired();
+  await loadAll();
+  render();
+};
+
+window.checkIn = async function(jobId){
+  await loadAll();
+  const j=jobOf(jobId);
+  if(!j)return msg("Einsatz nicht gefunden.");
+  if(window.sxgOpenAttendance(myId()))return msg("Du bist bereits eingecheckt. Erst auschecken, dann neu einchecken.");
+  const st=window.sxgJobStart(j), en=window.sxgJobEnd(j), now=Date.now();
+  if(en&&now>en.getTime())return msg("Der Einsatz ist bereits beendet.");
+  if(st&&now>st.getTime()+15*60*1000)return msg("Check-in ist nur bis 15 Minuten nach Beginn möglich. Admin kann dich nachträglich einchecken.");
+  if(!navigator.geolocation)return msg("GPS nicht verfügbar.");
+  if(j.require_location_tracking!==false && (!j.lat||!j.lng))return msg("GPS-Daten fehlen. Admin muss Adresse/Koordinaten eintragen oder GPS deaktivieren.");
+
+  navigator.geolocation.getCurrentPosition(async pos=>{
+    const lat=pos.coords.latitude,lng=pos.coords.longitude;
+    if(j.require_location_tracking!==false){
+      const dist=hav(lat,lng,Number(j.lat),Number(j.lng));
+      const radius=Number(j.geo_radius_m||1000);
+      if(dist>radius)return msg("Du bist zu weit weg. Entfernung: "+Math.round(dist)+" m / erlaubt: "+radius+" m");
+    }
+    const iso=new Date().toISOString();
+    const r=await sb.from("attendance").insert({
+      profile_id:myId(),
+      employee_id:myId(),
+      job_id:jobId,
+      check_in:iso,
+      clock_in:iso,
+      lat,lng,
+      present:true
+    });
+    if(r.error){
+      if(String(r.error.message).includes("duplicate")||String(r.error.message).includes("unique"))return msg("Du bist bereits irgendwo eingecheckt.");
+      return msg(r.error.message);
+    }
+    startTracking(jobId);
+    await loadAll();
+    render();
+  },()=>msg("GPS erlauben."),{enableHighAccuracy:true,timeout:12000,maximumAge:0});
+};
+
+window.checkOut = async function(){
+  await loadAll();
+  const open=window.sxgOpenAttendance(myId());
+  if(!open)return msg("Kein offener Check-in.");
+  const out=new Date().toISOString();
+  const r=await sb.from("attendance").update({
+    check_out:out,
+    clock_out:out,
+    present:false
+  }).eq("id",open.id);
+  if(r.error)return msg(r.error.message);
+  stopTracking();
+  await loadAll();
+  state.page="assignments";
+  render();
+};
+
+window.adminClockIn = async function(e){
+  e.preventDefault();
+  const f=new FormData(e.target), pid=f.get("profile_id"), jobId=f.get("job_id"), dt=f.get("clock_in_at");
+  if(!pid||!jobId||!dt)return msg("Mitarbeiter, Auftrag und Zeit auswählen.");
+  await loadAll();
+  if(window.sxgOpenAttendance(pid))return msg("Dieser Mitarbeiter ist bereits eingecheckt.");
+  const iso=new Date(dt).toISOString();
+  const j=jobOf(jobId)||{};
+  const r=await sb.from("attendance").insert({
+    profile_id:pid,employee_id:pid,job_id:jobId,check_in:iso,clock_in:iso,present:true,lat:j.lat||null,lng:j.lng||null
+  });
+  if(r.error){
+    if(String(r.error.message).includes("duplicate")||String(r.error.message).includes("unique"))return msg("Dieser Mitarbeiter ist bereits irgendwo eingecheckt.");
+    return msg(r.error.message);
+  }
+  closeModal();await loadAll();render();
+};
+
+window.adminClockOut = async function(e){
+  e.preventDefault();
+  const f=new FormData(e.target), id=f.get("attendance_id"), dt=f.get("clock_out_at");
+  if(!id||!dt)return msg("Offenen Check-in und Zeit auswählen.");
+  const r=await sb.from("attendance").update({
+    check_out:new Date(dt).toISOString(),
+    clock_out:new Date(dt).toISOString(),
+    present:false
+  }).eq("id",id);
+  if(r.error)return msg(r.error.message);
+  closeModal();await loadAll();render();
+};
+
+window.delTime = async function(id){
+  if(confirm("Stundeneintrag wirklich löschen?")){
+    const r=await sb.from("timesheets").delete().eq("id",id);
+    if(r.error)return msg(r.error.message);
+    await loadAll();render();
+  }
+};
+
+window.delBonus = async function(id){
+  if(confirm("Prämie löschen?")){
+    const r=await sb.from("bonuses").delete().eq("id",id);
+    if(r.error)return msg(r.error.message);
+    await loadAll();render();
+  }
+};
+
+window.saveBonus = async function(e){
+  e.preventDefault();
+  const f=new FormData(e.target), id=f.get("id");
+  const row={profile_id:f.get("profile_id"),amount:Number(f.get("amount")||0),reason:f.get("reason"),created_by:myId()};
+  const r=id?await sb.from("bonuses").update(row).eq("id",id):await sb.from("bonuses").insert(row);
+  if(r.error)return msg(r.error.message);
+  closeModal();await loadAll();render();
+};
+
+const sxgOldModalHtmlV10 = modalHtml;
+window.modalHtml = modalHtml = function(){
+  if(!state.modal)return "";
+  const {type,id}=state.modal;
+  if(type==="bonus"){
+    const b=state.bonuses.find(x=>String(x.id)===String(id))||{};
+    return modal("Prämie",`<form class="form" id="bonusForm"><input type="hidden" name="id" value="${esc(b.id||"")}"><select name="profile_id">${state.profiles.map(p=>`<option value="${p.id}" ${b.profile_id===p.id?"selected":""}>${esc(p.full_name||p.email)}</option>`).join("")}</select><input name="amount" type="number" step="0.01" placeholder="Betrag" value="${esc(b.amount||"")}"><input class="full" name="reason" placeholder="Begründung" value="${esc(b.reason||"")}"><button>Speichern</button></form>`);
+  }
+  return sxgOldModalHtmlV10();
+};
+
+window.liveWageHtml = function(){
+  if(!admin())return "";
+  const employees=state.profiles.filter(p=>p.approved);
+  const totalHours=employees.reduce((s,p)=>s+employeeMonthSummary(p.id).hours,0);
+  const totalMoney=employees.reduce((s,p)=>s+employeeMonthSummary(p.id).total,0);
+  return `<section class="panel"><div class="toolbar"><button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button><h2>Live-Lohn ${monthKey()}</h2><button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button></div><div class="cards"><div class="card"><h3>Gesamtstunden</h3><h1>${totalHours.toFixed(4)} h</h1></div><div class="card"><h3>Gesamtlohn</h3><h1>${totalMoney.toFixed(2)} €</h1></div><div class="card"><h3>Mitarbeiter</h3><h1>${employees.length}</h1></div></div><br><div class="table">${employees.map(p=>{const s=employeeMonthSummary(p.id);return `<div class="row"><div><b>${esc(p.full_name||p.email)}</b><br>Stundenlohn: ${Number(s.rate||0).toFixed(2)} €/h<br>Arbeitstage: ${s.days}</div><span>${s.hours.toFixed(4)} h</span><span><b>${s.total.toFixed(2)} €</b><br><small>Lohn ${s.wage.toFixed(2)} € + Zuschläge ${(s.premium||0).toFixed(2)} € + Prämien ${s.bonus.toFixed(2)} €</small></span><button onclick="openModal('wagedetail','${p.id}')">Details</button></div>`}).join("")||`<div class="empty">Keine Mitarbeiter</div>`}</div></section>`;
+};
+
+const sxgOldRefreshPortal = window.refreshPortal;
+window.refreshPortal = async function(){await window.sxgSafeRefresh();};
 
 init();
 }catch(e){document.getElementById("root").innerHTML='<div class="error"><b>Startfehler:</b>\\n'+String(e.message)+'</div>'}
