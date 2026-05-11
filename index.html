@@ -173,7 +173,7 @@ async function apiPush(title,body,profileIds=null){try{await fetch("/api/send-pu
 function b64(s){const p="=".repeat((4-s.length%4)%4),b=(s+p).replace(/-/g,"+").replace(/_/g,"/"),r=atob(b),o=new Uint8Array(r.length);for(let i=0;i<r.length;i++)o[i]=r.charCodeAt(i);return o}
 async function askPush(){if(!("serviceWorker"in navigator)||!("PushManager"in window))return msg("Push wird nicht unterstützt.");const perm=await Notification.requestPermission();if(perm!=="granted")return msg("Push nicht erlaubt.");const reg=await navigator.serviceWorker.register("/sw.js");const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64(VAPID_PUBLIC_KEY)});const j=sub.toJSON();const r=await sb.from("push_subscriptions").upsert({profile_id:myId(),endpoint:j.endpoint,p256dh:j.keys.p256dh,auth:j.keys.auth},{onConflict:"endpoint"});msg(r.error?r.error.message:"Push aktiviert.")}
 async function safe(p){try{const r=await p;return r.data||[]}catch(e){try{const c=JSON.parse(localStorage.getItem("sxg_cache")||"{}");return []}catch(_){return[]}}}
-async function handlePasswordRecovery(){
+window.handlePasswordRecovery = async function(){
   const hash=new URLSearchParams(location.hash.replace("#","?"));
   const type=hash.get("type");
   if(type==="recovery"){
@@ -185,7 +185,7 @@ async function handlePasswordRecovery(){
     msg("Passwort wurde geändert. Du kannst dich jetzt anmelden.");
   }
 }
-async function init(){await handlePasswordRecovery();const{data}=await sb.auth.getSession();state.session=data.session;if(state.session){await loadProfile();startAutoRefresh()}render()}
+async function init(){await window.handlePasswordRecovery();const{data}=await sb.auth.getSession();state.session=data.session;if(state.session){await loadProfile();startAutoRefresh()}render()}
 async function loadProfile(){const u=state.session.user;let{data}=await sb.from("profiles").select("*").eq("id",u.id).maybeSingle();if(!data){data={id:u.id,email:u.email,full_name:u.user_metadata?.full_name||u.email,role:"employee",approved:false};await sb.from("profiles").insert(data)}state.profile=data;await loadAll()}
 async function loadAll(){const r=await Promise.all([safe(sb.from("jobs").select("*").order("id",{ascending:false})),safe(sb.from("profiles").select("*").order("full_name")),safe(sb.from("job_assignments").select("*").order("id",{ascending:false})),safe(sb.from("timesheets").select("*").order("id",{ascending:false})),safe(sb.from("leave_requests").select("*").order("id",{ascending:false})),safe(sb.from("attendance").select("*").order("id",{ascending:false})),safe(sb.from("payroll_documents").select("*").order("id",{ascending:false})),safe(sb.from("route_plans").select("*").order("id",{ascending:false})),safe(sb.from("bonuses").select("*").order("id",{ascending:false})),safe(sb.from("shift_premiums").select("*").order("id",{ascending:false})),safe(sb.from("chat_messages").select("*").order("id",{ascending:false}).limit(100)),safe(sb.from("location_logs").select("*").order("id",{ascending:false}).limit(500))]);["jobs","profiles","assignments","timesheets","leaves","attendance","payslips","routes","bonuses","premiums","chats","locations"].forEach((k,i)=>state[k]=r[i])}
 async function login(e){e.preventDefault();const f=new FormData(e.target),{error}=await sb.auth.signInWithPassword({email:f.get("email"),password:f.get("password")});if(error)return msg(error.message);location.reload()}
@@ -439,7 +439,7 @@ async function savePremium(e){e.preventDefault();const f=new FormData(e.target),
 async function uploadPayroll(e){e.preventDefault();const f=new FormData(e.target),file=f.get("file"),pid=f.get("profile_id"),month=f.get("month");if(!file||!pid)return msg("PDF auswählen.");const path=`payslips/${pid}/${Date.now()}-${file.name}`,up=await sb.storage.from("payslips").upload(path,file,{upsert:true});if(up.error)return msg(up.error.message);const r=await sb.from("payroll_documents").insert({profile_id:pid,title:`Lohnabrechnung ${month}`,month,file_path:path,file_name:file.name,uploaded_by:myId()});if(r.error)return msg(r.error.message);await apiPush("Neue Lohnabrechnung","Deine Lohnabrechnung ist verfügbar.",[pid]);closeModal();await loadAll();render()}
 async function openFile(path){const{data,error}=await sb.storage.from("payslips").createSignedUrl(path,120);if(error)return msg(error.message);window.open(data.signedUrl,"_blank")}
 function render(){if(!state.session){root.innerHTML=authHtml();bind();cleanUiText();return}if(state.profile&&!state.profile.approved){root.innerHTML=`<div class="auth"><div class="auth-card"><h1>SXG Portal</h1><p>Konto wartet auf Freigabe.</p><button onclick="location.reload()">Status neu laden</button><br><br><button class="secondary" onclick="sxgSafeRefresh()">Aktualisieren</button><button class="secondary" onclick="logout()">Abmelden</button></div></div>`;return}root.innerHTML=appHtml();bind();cleanUiText()}
-async function resetPassword(){
+window.resetPassword = async function(){
   const email=prompt("E-Mail eingeben, für die das Passwort zurückgesetzt werden soll:");
   if(!email)return;
   const redirectTo=location.origin;
