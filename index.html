@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>SXG Mitarbeiterportal v14.7 v11</title>
+<title>SXG Mitarbeiterportal v14.8 v14.8 v11</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root{--bg:#f4f5f7;--line:#e5e7eb;--muted:#6b7280}
@@ -79,7 +79,7 @@ function isoDate(x){try{return new Date(x).toISOString().slice(0,10)}catch(e){re
 
 let refreshTimer=null;
 function isRefreshingAllowed(){return !!state.session && !state.modal}
-function startAutoRefresh(){if(refreshTimer)return;refreshTimer=setInterval(async()=>{if(isRefreshingAllowed()){await loadAll();render()}},10000)}
+function startAutoRefresh(){if(refreshTimer)return;refreshTimer=setInterval(async function(){if(isRefreshingAllowed()){await loadAll();render()}},10000)}
 function findAttendanceTimesheet(att){
   return state.timesheets.find(t=>String(t.attendance_id||"")===String(att.id)) ||
     state.timesheets.find(t=>String(t.job_id||"")===String(att.job_id||"") && (t.profile_id||t.employee_id)===(att.profile_id||att.employee_id) && String(t.work_date||"")===isoDate(att.check_in||att.clock_in))
@@ -456,7 +456,7 @@ function pidOfRow(x){return x?.profile_id||x?.employee_id||x?.user_id||""}
 async function openJobImage(path){const r=await sb.storage.from("job-images").createSignedUrl(path,3600);if(r.error)return msg(r.error.message);window.open(r.data.signedUrl,"_blank")}
 async function uploadJobImage(jobId){
   const inp=document.createElement("input");inp.type="file";inp.accept="image/*";inp.multiple=true;
-  inp.onchange=async()=>{
+  inp.onchange=async function(){
     for(const file of inp.files){
       const path=`job-${jobId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
       const up=await sb.storage.from("job-images").upload(path,file,{upsert:false});
@@ -472,7 +472,7 @@ async function delJobImage(id,path){if(!confirm("Bild löschen?"))return;await s
 async function openJobExcel(path){const r=await sb.storage.from("job-excel").createSignedUrl(path,3600);if(r.error)return msg(r.error.message);window.open(r.data.signedUrl,"_blank")}
 async function uploadJobExcel(jobId){
   const inp=document.createElement("input");inp.type="file";inp.accept=".xlsx";
-  inp.onchange=async()=>{
+  inp.onchange=async function(){
     const file=inp.files[0];if(!file)return;
     if(!file.name.toLowerCase().endsWith(".xlsx"))return msg("Bitte .xlsx hochladen.");
     const path=`job-${jobId}/template-${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
@@ -516,7 +516,7 @@ function jobMediaHtml(jobId){
 }
 async function sendChatImage(toPid){
   const inp=document.createElement("input");inp.type="file";inp.accept="image/*";
-  inp.onchange=async()=>{
+  inp.onchange=async function(){
     const file=inp.files[0];if(!file)return;
     const path=`chat/${myId()}-${toPid}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
     const up=await sb.storage.from("chat-images").upload(path,file,{upsert:false});
@@ -2258,7 +2258,7 @@ window.leaveHtml = function(){
   };
 
   if(!window.sxgReminderTimer){
-    window.sxgReminderTimer=setInterval(async()=>{try{await loadAll();await sendShiftReminders()}catch(e){}},10*60*1000);
+    window.sxgReminderTimer=setInterval(async function(){try{await loadAll();await sendShiftReminders()}catch(e){}},10*60*1000);
   }
 })();
 
@@ -2315,7 +2315,7 @@ window.leaveHtml = function(){
   window.uploadJobImage = async function(jobId){
     const inp=document.createElement("input");
     inp.type="file"; inp.accept="image/*"; inp.multiple=true;
-    inp.onchange=async()=>{
+    inp.onchange=async function(){
       for(const file of inp.files){
         const path=`job-${jobId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
         const up=await sb.storage.from("job-images").upload(path,file,{upsert:false});
@@ -2366,7 +2366,7 @@ window.leaveHtml = function(){
   window.sendChatImage = async function(toPid){
     const inp=document.createElement("input");
     inp.type="file"; inp.accept="image/*";
-    inp.onchange=async()=>{
+    inp.onchange=async function(){
       const file=inp.files[0]; if(!file)return;
       const path=`chat/${myId()}-${toPid}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
       const up=await sb.storage.from("chat-images").upload(path,file,{upsert:false});
@@ -2484,7 +2484,7 @@ window.leaveHtml = function(){
   window.uploadJobExcel=async function(jobId){
     const inp=document.createElement("input");
     inp.type="file";inp.accept=".xlsx,.xls";
-    inp.onchange=async()=>{
+    inp.onchange=async function(){
       const file=inp.files[0]; if(!file)return;
       const path=`job-${jobId}/template-${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
       const up=await sb.storage.from("job-excel").upload(path,file,{upsert:false});
@@ -2774,13 +2774,13 @@ window.leaveHtml = function(){
 
   // loadAll nicht direkt überschreiben, sondern Extras nach Render/Buttons bei Bedarf laden
   if(!window.sxgFeatureTimer){
-    window.sxgFeatureTimer=setInterval(async()=>{try{await loadExtra()}catch(e){}},30000);
+    window.sxgFeatureTimer=setInterval(async function(){try{await loadExtra()}catch(e){}},30000);
   }
 
   window.uploadJobImage=async function(jobId){
     const inp=document.createElement("input");
     inp.type="file"; inp.accept="image/*"; inp.multiple=true;
-    inp.onchange=async()=>{
+    inp.onchange=async function(){
       for(const file of inp.files){
         const path=`job-${jobId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
         const up=await sb.storage.from("job-images").upload(path,file,{upsert:false});
@@ -2808,7 +2808,7 @@ window.leaveHtml = function(){
   window.uploadJobExcel=async function(jobId){
     const inp=document.createElement("input");
     inp.type="file"; inp.accept=".xlsx";
-    inp.onchange=async()=>{
+    inp.onchange=async function(){
       const file=inp.files[0]; if(!file)return;
       if(!file.name.toLowerCase().endsWith(".xlsx"))return msg("Bitte .xlsx hochladen.");
       const path=`job-${jobId}/template-${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
