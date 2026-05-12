@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>SXG Mitarbeiterportal v15.1 v15 v11</title>
+<title>SXG Mitarbeiterportal v15.2 v15.1 v15 v11</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root{--bg:#f4f5f7;--line:#e5e7eb;--muted:#6b7280}
@@ -2758,6 +2758,111 @@ window.leaveHtml = function(){
   };
 
   setTimeout(function(){ sxgEnhanceJobs(); sxgEnhanceChat(); },1200);
+})();
+
+
+/* SXG v15.2 Geschlecht sichtbar Fix */
+(function(){
+  function sxgPatchGenderField(){
+    const form=document.getElementById("profileForm");
+    if(!form || form.querySelector("[name='gender']")) return;
+
+    const idInput=form.querySelector("[name='id']");
+    const id=idInput?idInput.value:null;
+    const p=(state.profiles||[]).find(x=>x.id===id)||state.profile||{};
+    const g=String(p.gender||"").toLowerCase();
+
+    const genderHtml=`<select name="gender">
+      <option value="">Geschlecht wählen</option>
+      <option value="m" ${g==="m"||g==="male"||g==="männlich"?"selected":""}>Männlich</option>
+      <option value="w" ${g==="w"||g==="female"||g==="weiblich"?"selected":""}>Weiblich</option>
+    </select>`;
+
+    const last=form.querySelector("[name='last_name']");
+    const full=form.querySelector("[name='full_name']");
+    const phone=form.querySelector("[name='phone']");
+
+    if(last) last.insertAdjacentHTML("afterend", genderHtml);
+    else if(full) full.insertAdjacentHTML("afterend", genderHtml);
+    else if(phone) phone.insertAdjacentHTML("beforebegin", genderHtml);
+    else form.insertAdjacentHTML("afterbegin", genderHtml);
+
+    if(!admin()){
+      const sel=form.querySelector("[name='gender']");
+      if(sel) sel.disabled=true;
+      form.insertAdjacentHTML("afterbegin", `<input type="hidden" name="gender" value="${p.gender||""}">`);
+    }
+  }
+
+  const oldOpenModalGender=window.openModal;
+  window.openModal=function(type,id){
+    oldOpenModalGender(type,id);
+    setTimeout(function(){
+      if(type==="profile") sxgPatchGenderField();
+    },100);
+  };
+
+  const oldRenderGender=window.render;
+  window.render=function(){
+    const out=oldRenderGender();
+    setTimeout(sxgPatchGenderField,150);
+    return out;
+  };
+
+  const oldSaveProfileGender=window.saveProfile || saveProfile;
+  window.saveProfile = saveProfile = async function(e){
+    e.preventDefault();
+    const f=new FormData(e.target);
+    const id=f.get("id");
+    const current=(state.profiles||[]).find(p=>p.id===id)||state.profile||{};
+    const first=String(f.get("first_name")||current.first_name||"").trim();
+    const last=String(f.get("last_name")||current.last_name||"").trim();
+    const gender=String(f.get("gender")||current.gender||"").trim();
+
+    let row={
+      phone:f.get("phone"),
+      address:f.get("address"),
+      emergency_contact:f.get("emergency_contact")
+    };
+
+    if(admin()){
+      Object.assign(row,{
+        first_name:first,
+        last_name:last,
+        full_name:[first,last].filter(Boolean).join(" "),
+        gender:gender,
+        role:f.get("role")||"employee",
+        approved:f.get("approved")==="on",
+        guard_id:f.get("guard_id"),
+        epin:f.get("epin"),
+        e_pin:f.get("epin"),
+        tax_id:f.get("tax_id"),
+        qualification:f.get("qualification"),
+        iban:f.get("iban"),
+        hourly_rate:Number(f.get("hourly_rate")||0)
+      });
+    }else{
+      Object.assign(row,{
+        first_name:current.first_name,
+        last_name:current.last_name,
+        full_name:current.full_name,
+        gender:current.gender,
+        role:current.role,
+        approved:current.approved,
+        guard_id:current.guard_id,
+        epin:current.epin,
+        e_pin:current.e_pin,
+        tax_id:current.tax_id,
+        qualification:current.qualification,
+        iban:current.iban,
+        hourly_rate:current.hourly_rate
+      });
+    }
+
+    const r=await sb.from("profiles").update(row).eq("id",id);
+    if(r.error)return msg(r.error.message);
+    closeModal();await loadAll();await loadProfile();render();
+  };
 })();
 
 init();
