@@ -1735,7 +1735,7 @@ window.leaveHtml = function(){
     return rows;
   }
 
-  jobsHtml = window.jobsHtml = function(){
+  window.jobsHtml = function(){
     const fp=selectedPid();
     let list=state.jobs.filter(j=>admin()||((j.status||"open")==="open"&&!jobExpired(j)&&(!jobDate(j)||jobDate(j)>=today())));
     if(admin()&&fp){
@@ -1745,7 +1745,7 @@ window.leaveHtml = function(){
     return `${filterBar("Aufträge nach Mitarbeiter filtern")}<section class="panel"><div class="toolbar"><h2>${admin()?'Aufträge verwalten':'Offene Einsätze'}</h2>${admin()?`<button onclick="openModal('job')">+ Auftrag</button> <button onclick="openModal('repeat')">Wiederholen</button>`:""}</div><div class="table">${list.map(j=>{const c=assignedCount(j.id),max=Number(j.needed_employees||1),full=c>=max,mine=isAssigned(j.id),open=openAtt(myId(),j.id);return `<div class="row"><div><b>${esc(j.title)}</b><br>${esc(j.client||"")} · ${esc(j.location||"")}<br>${esc(j.address||"")}<br>${esc(jobDate(j)||"")} ${esc(j.start_time||"")}-${esc(j.end_time||"")}<br>${admin()?`<b>Eingetragen:</b> ${state.assignments.filter(a=>String(a.job_id)===String(j.id)).map(a=>`${esc(nameOf(pidOf(a)))} <button class='danger' onclick="unassignJob(${j.id},'${pidOf(a)}')">x</button>`).join(" ")||"niemand"}`:""}</div><span>${c}/${max}</span><span class="badge ${full?'warn':'ok'}">${full?'voll':'frei'}</span><div>${admin()?`<button class="secondary" onclick="openModal('assign',${j.id})">Eintragen</button> <button class="secondary" onclick="openModal('job',${j.id})">Bearbeiten</button> <button class="danger" onclick="delJob(${j.id})">Löschen</button>`:open?`<button class="ok" onclick="checkOut()">Check-out</button>`:mine?`<button class="ok" onclick="checkIn(${j.id})">Check-in</button> <button class="secondary" onclick="unassignJob(${j.id})">Austragen</button>`:`<button onclick="assignJob(${j.id})" ${full?'disabled':''}>Eintragen</button>`}</div></div>`}).join("")||`<div class="empty">${fp?"Keine Aufträge für diesen Mitarbeiter":"Keine Einsätze"}</div>`}</div></section>`;
   };
 
-  assignmentsHtml = window.assignmentsHtml = function(){
+  window.assignmentsHtml = function(){
     const fp=selectedPid();
     let ass=admin()?state.assignments:myAssignments();
     if(admin()&&fp)ass=ass.filter(a=>pidOf(a)===fp);
@@ -1760,7 +1760,7 @@ window.leaveHtml = function(){
     return `${filterBar("Einsätze nach Mitarbeiter filtern")}<section class="panel"><h2>${admin()?'Einsätze Übersicht':'Meine Einsätze'}</h2><h3>Aktuell</h3><div class="table">${current.map(row).join("")||`<div class="empty">Keine aktuellen Einsätze</div>`}</div><br><h3>Einsatz-Historie</h3><div class="table">${history.map(row).join("")||`<div class="empty">Noch keine abgeschlossenen Einsätze</div>`}</div></section>`;
   };
 
-  timesHtml = window.timesHtml = function(all){
+  window.timesHtml = function(all){
     const rows=timeRowsForFilter(all);
     return `${all&&admin()?filterBar("Stunden nach Mitarbeiter filtern"):""}<section class="panel"><div class="toolbar"><h2>${all?'Alle Stunden':'Meine Stunden'}</h2><button onclick="openModal('time')">+ Stunden</button>${admin()?`<button onclick="openModal('adminClockIn')">+ Mitarbeiter einchecken</button> <button onclick="openModal('adminClockOut')">Mitarbeiter auschecken</button> <button onclick="openModal('bonus')">+ Prämie</button> <button onclick="openModal('premium')">+ Zuschlag</button>`:""}</div><div class="table">${rows.map(t=>`<div class="row"><div><b>${esc(all?nameOf(pidOf(t)):"Meine Stunden")}</b><br>${esc(t.work_date||"")} ${esc(t.start_time||"")}-${esc(t.end_time||"")} · ${esc(t.location||"")}<br>${esc(t.activity||"")} ${esc(t.description||"")}</div><span>${Number(t.hours_worked||t.hours||0).toFixed(4)} Std.</span><span class="badge ${t.approved?'ok':'warn'}">${esc(t.status||"pending")}</span><div><button class="secondary" onclick="openModal('time',${t.id})">Bearbeiten</button>${admin()?` <button class="danger" onclick="delTime(${t.id})">Löschen</button>`:""}</div></div>`).join("")||`<div class="empty">Keine Stunden</div>`}</div></section>`;
   };
@@ -1793,7 +1793,7 @@ window.leaveHtml = function(){
   };
 
   const oldModal = modalHtml;
-  modalHtml = window.modalHtml = function(){
+  window.modalHtml = function(){
     if(!state.modal)return "";
     const {type,id}=state.modal;
     if(type==="job"){const j=jobOf(id)||{};return modal("Auftrag",`<form class="form" id="jobForm"><input type="hidden" name="id" value="${esc(j.id||"")}"><input name="title" placeholder="Titel" value="${esc(j.title||"")}"><input name="client" placeholder="Kunde" value="${esc(j.client||"")}"><input name="location" placeholder="Standort" value="${esc(j.location||"")}"><input name="address" placeholder="Adresse" value="${esc(j.address||"")}"><input name="lat" placeholder="Latitude" value="${esc(j.lat||"")}"><input name="lng" placeholder="Longitude" value="${esc(j.lng||"")}"><input name="geo_radius_m" type="number" placeholder="Radius Meter" value="${esc(j.geo_radius_m||1000)}"><label class="full"><input type="checkbox" name="require_location_tracking" ${j.require_location_tracking===false||j.require_location_tracking==="false"?"":"checked"}> GPS/Radius für diesen Einsatz aktiv</label><input type="date" name="job_date" value="${esc(jobDate(j))}"><input name="start_time" placeholder="Start" value="${esc(j.start_time||"")}"><input name="end_time" placeholder="Ende" value="${esc(j.end_time||"")}"><input type="number" name="needed_employees" placeholder="Mitarbeiter gesucht" value="${esc(j.needed_employees||1)}"><input name="status" value="${esc(j.status||"open")}"><textarea class="full" name="notes" placeholder="Hinweise">${esc(j.notes||"")}</textarea><button>Speichern</button></form>`)}
@@ -1854,7 +1854,7 @@ window.leaveHtml = function(){
     render();
   };
 
-  assignmentsHtml = window.assignmentsHtml = function(){
+  window.assignmentsHtml = function(){
     const fp=selectedPid();
     let ass=admin()?state.assignments:myAssignments();
     if(admin()&&fp)ass=ass.filter(a=>pidOf(a)===fp);
@@ -1943,7 +1943,7 @@ window.leaveHtml = function(){
   };
 
   const oldModalV111 = modalHtml;
-  modalHtml = window.modalHtml = function(){
+  window.modalHtml = function(){
     if(!state.modal)return "";
     const {type,id}=state.modal;
     if(type==="daydetail"){
@@ -2147,7 +2147,7 @@ window.leaveHtml = function(){
   }
 
   const oldRefresh = window.refreshPortal;
-  refreshPortal = window.refreshPortal = async function(){
+  window.refreshPortal = async function(){
     await loadAll();
     await sendShiftReminders();
     render();
@@ -2308,7 +2308,7 @@ window.leaveHtml = function(){
     closeModal();render();
   };
 
-  jobsHtml = window.jobsHtml = function(){
+  window.jobsHtml = function(){
     const fp=state.adminEmployeeFilter||"";
     let list=state.jobs.filter(j=>canSeeJob(j)&&inDateRange(jobDateValue(j))&&(admin()||((j.status||"open")==="open"&&!jobExpired(j))));
     if(admin()&&fp){
@@ -2320,12 +2320,12 @@ window.leaveHtml = function(){
   };
 
   const oldTimesHtmlV13 = timesHtml;
-  timesHtml = window.timesHtml = function(all){
+  window.timesHtml = function(all){
     let out=oldTimesHtmlV13(all);
     return `${dateFilterBar("Stunden Datumfilter")}`+out;
   };
   const oldAssignmentsHtmlV13 = assignmentsHtml;
-  assignmentsHtml = window.assignmentsHtml = function(){
+  window.assignmentsHtml = function(){
     let out=oldAssignmentsHtmlV13();
     return `${dateFilterBar("Einsätze Datumfilter")}`+out;
   };
@@ -2346,7 +2346,7 @@ window.leaveHtml = function(){
   };
 
   const oldModalV13 = modalHtml;
-  modalHtml = window.modalHtml = function(){
+  window.modalHtml = function(){
     if(!state.modal)return "";
     const {type,id}=state.modal;
     if(type==="jobVisibility"){
@@ -2440,14 +2440,14 @@ window.leaveHtml = function(){
   };
 
   const oldJobsHtml=jobsHtml;
-  jobsHtml=window.jobsHtml=function(){
+  window.jobsHtml =function(){
     let out=oldJobsHtml();
     if(out.includes("jobImagesHtml(j.id)")||out.includes("Kunden-Excel:")) return out;
     return out;
   };
 
   const prevJobsHtml = jobsHtml;
-  jobsHtml=window.jobsHtml=function(){
+  window.jobsHtml =function(){
     const fp=state.adminEmployeeFilter||"";
     const dateF=state.dateFilter||{from:"",to:""};
     const inRange=d=>!d||((!dateF.from||String(d).slice(0,10)>=dateF.from)&&(!dateF.to||String(d).slice(0,10)<=dateF.to));
@@ -2462,7 +2462,7 @@ window.leaveHtml = function(){
   };
 
   const oldModal=modalHtml;
-  modalHtml=window.modalHtml=function(){
+  window.modalHtml =function(){
     if(!state.modal)return "";
     const {type,id}=state.modal;
     if(type==="profile"){
@@ -2518,13 +2518,13 @@ window.leaveHtml = function(){
     };
   }
   const oldNameOf = window.nameOf || nameOf;
-  nameOf = window.nameOf = function(id){
+  window.nameOf = function(id){
     const p=state.profiles.find(x=>x.id===id);
     return cleanName(p).full_name || oldNameOf(id);
   };
 
   const oldModal = modalHtml;
-  modalHtml = window.modalHtml = function(){
+  window.modalHtml = function(){
     if(!state.modal)return "";
     const {type,id}=state.modal;
     if(type==="profile"){
@@ -2551,7 +2551,7 @@ window.leaveHtml = function(){
     return oldModal();
   };
 
-  saveProfile = window.saveProfile = async function(e){
+  window.saveProfile = async function(e){
     e.preventDefault();
     const f=new FormData(e.target), id=f.get("id");
     const first=String(f.get("first_name")||"").trim();
@@ -2616,29 +2616,24 @@ window.leaveHtml = function(){
   };
 
   const oldRefresh = window.refreshPortal || refreshPortal;
-  refreshPortal = window.refreshPortal = async function(){
+  window.refreshPortal = async function(){
     await runAutoCheckoutSilent();
     await oldRefresh();
   };
-
-  const oldInitAuto = init;
-  init = window.init = async function(){
-    await oldInitAuto();
-    setTimeout(runAutoCheckoutSilent, 1500);
-  };
+  setTimeout(runAutoCheckoutSilent, 1500);
 
   if(!window.sxgAutoCheckoutTimer){
     window.sxgAutoCheckoutTimer = setInterval(runAutoCheckoutSilent, 5*60*1000);
   }
 
   const oldAssignments = assignmentsHtml;
-  assignmentsHtml = window.assignmentsHtml = function(){
+  window.assignmentsHtml = function(){
     setTimeout(runAutoCheckoutSilent, 500);
     return oldAssignments();
   };
 
   const oldTimes = timesHtml;
-  timesHtml = window.timesHtml = function(all){
+  window.timesHtml = function(all){
     const html = oldTimes(all);
     if(admin()){
       return `<section class="panel"><div class="toolbar"><h3>Auto-Checkout</h3><button onclick="runAutoCheckout()">Jetzt prüfen / offene Einsätze beenden</button><small>Beendet offene Check-ins nach Auftragsende + 15 Minuten.</small></div></section>` + html;
