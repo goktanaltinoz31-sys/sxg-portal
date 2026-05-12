@@ -10,25 +10,44 @@ function cellText(v) {
   if (typeof v === "object" && v.richText) return v.richText.map(x => x.text || "").join("");
   return String(v);
 }
-function norm(v) { return cellText(v).toLowerCase().trim(); }
-
+function norm(v) {
+  return cellText(v).toLowerCase().replace(/\s+/g, " ").trim();
+}
+function genderCode(g) {
+  const s = String(g || "").toLowerCase().trim();
+  if (s === "w" || s.includes("weib") || s.includes("female") || s === "f") return "W";
+  if (s === "m" || s.includes("männ") || s.includes("maenn") || s.includes("male")) return "M";
+  return "";
+}
 function findColumns(sheet) {
   const found = {};
-  for (let r = 1; r <= Math.min(sheet.rowCount || 1, 30); r++) {
+  for (let r = 1; r <= Math.min(sheet.rowCount || 1, 40); r++) {
     const row = sheet.getRow(r);
     row.eachCell({ includeEmpty: false }, (cell, c) => {
-      const t = norm(cell.value);
-      if (!found.name && (t.includes("name") || t.includes("mitarbeiter") || t.includes("personal"))) found.name = { row: r, col: c };
-      if (!found.epin && (t.includes("e-pin") || t.includes("epin") || t === "pin" || t.includes("e pin"))) found.epin = { row: r, col: c };
-      if (!found.guard && (t.includes("bewacher") || t.includes("guard") || t.includes("ausweis"))) found.guard = { row: r, col: c };
+      const t = norm(cell.value).replace(/:/g, "");
+      if (!found.company && (t === "firma" || t.includes("firma"))) found.company = { row: r, col: c };
+      if (!found.area && (t === "bereich" || t.includes("bereich"))) found.area = { row: r, col: c };
+      if (!found.first && (t === "vorname" || t.includes("first name"))) found.first = { row: r, col: c };
+      if (!found.last && (t === "name" || t === "nachname" || t.includes("last name") || t.includes("surname"))) found.last = { row: r, col: c };
+      if (!found.full && !found.last && (t.includes("mitarbeiter") || t.includes("personal"))) found.full = { row: r, col: c };
+      if (!found.guard && (t.includes("§34a") || t.includes("34a") || t.includes("bewacher") || t.includes("guard") || t.includes("ausweis"))) found.guard = { row: r, col: c };
+      if (!found.epin && (t.includes("e-pin") || t.includes("epin") || t.includes("e pin") || t.includes("i-pin") || t.includes("ipin") || t.includes("dfb"))) found.epin = { row: r, col: c };
+      if (!found.gender && (t === "m/w" || t.includes("geschlecht") || t.includes("gender"))) found.gender = { row: r, col: c };
       if (!found.phone && (t.includes("telefon") || t.includes("phone") || t.includes("handy"))) found.phone = { row: r, col: c };
       if (!found.email && (t.includes("mail") || t.includes("e-mail"))) found.email = { row: r, col: c };
     });
-    if (found.name || found.epin || found.guard) break;
+    if ((found.first || found.last || found.full) && (found.epin || found.guard || found.gender)) break;
   }
   return found;
 }
-
+function firstName(emp) {
+  return emp.first_name || String(emp.full_name || "").trim().split(/\s+/)[0] || "";
+}
+function lastName(emp) {
+  if (emp.last_name) return emp.last_name;
+  const p = String(emp.full_name || "").trim().split(/\s+/);
+  return p.slice(1).join(" ") || "";
+}
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
@@ -59,13 +78,19 @@ module.exports = async function handler(req, res) {
     if (!sheet) return res.status(400).json({ error: "Keine Tabelle in der Excel gefunden." });
 
     const c = findColumns(sheet);
-    const startRow = (c.name?.row || c.epin?.row || c.guard?.row || 1) + 1;
+    const headerRow = c.first?.row || c.last?.row || c.full?.row || c.epin?.row || c.guard?.row || c.gender?.row || 1;
+    const startRow = headerRow + 1;
 
     employees.forEach((emp, i) => {
       const row = sheet.getRow(startRow + i);
-      row.getCell(c.name?.col || 1).value = emp.full_name || "";
-      row.getCell(c.epin?.col || 2).value = emp.epin || "";
+      if (c.company) row.getCell(c.company.col).value = "SXG Service";
+      if (c.last) row.getCell(c.last.col).value = lastName(emp);
+      else if (c.full) row.getCell(c.full.col).value = emp.full_name || [firstName(emp), lastName(emp)].filter(Boolean).join(" ");
+      else row.getCell(1).value = emp.full_name || [firstName(emp), lastName(emp)].filter(Boolean).join(" ");
+      if (c.first) row.getCell(c.first.col).value = firstName(emp);
       if (c.guard) row.getCell(c.guard.col).value = emp.guard_id || "";
+      if (c.epin) row.getCell(c.epin.col).value = emp.epin || "";
+      if (c.gender) row.getCell(c.gender.col).value = genderCode(emp.gender);
       if (c.phone) row.getCell(c.phone.col).value = emp.phone || "";
       if (c.email) row.getCell(c.email.col).value = emp.email || "";
       row.commit();
