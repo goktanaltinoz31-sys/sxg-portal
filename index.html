@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>SXG Mitarbeiterportal v14.8 v14.8 v11</title>
+<title>SXG Mitarbeiterportal v15 v11</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root{--bg:#f4f5f7;--line:#e5e7eb;--muted:#6b7280}
@@ -32,7 +32,7 @@ const root=document.getElementById("root");
 const esc=v=>String(v??"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const admin=()=>state.profile?.role==="admin";
 const myId=()=>state.profile?.id;
-const nameOf=id=>{const p=state.profiles.find(p=>p.id===id);return [p?.first_name,p?.last_name].filter(Boolean).join(' ')||p?.full_name||p?.email||'Mitarbeiter'};
+const nameOf=id=>state.profiles.find(p=>p.id===id)?.full_name||state.profiles.find(p=>p.id===id)?.email||"Mitarbeiter";
 const jobOf=id=>state.jobs.find(j=>String(j.id)===String(id))||null;
 const today=()=>new Date().toISOString().slice(0,10);
 const jobDate=j=>j?.job_date||j?.start_date||"";
@@ -79,7 +79,7 @@ function isoDate(x){try{return new Date(x).toISOString().slice(0,10)}catch(e){re
 
 let refreshTimer=null;
 function isRefreshingAllowed(){return !!state.session && !state.modal}
-function startAutoRefresh(){if(refreshTimer)return;refreshTimer=setInterval(async function(){if(isRefreshingAllowed()){await loadAll();render()}},10000)}
+function startAutoRefresh(){if(refreshTimer)return;refreshTimer=setInterval(async()=>{if(isRefreshingAllowed()){await loadAll();render()}},10000)}
 function findAttendanceTimesheet(att){
   return state.timesheets.find(t=>String(t.attendance_id||"")===String(att.id)) ||
     state.timesheets.find(t=>String(t.job_id||"")===String(att.job_id||"") && (t.profile_id||t.employee_id)===(att.profile_id||att.employee_id) && String(t.work_date||"")===isoDate(att.check_in||att.clock_in))
@@ -187,26 +187,7 @@ window.handlePasswordRecovery = async function(){
 }
 async function init(){await window.handlePasswordRecovery();const{data}=await sb.auth.getSession();state.session=data.session;if(state.session){await loadProfile();startAutoRefresh()}render()}
 async function loadProfile(){const u=state.session.user;let{data}=await sb.from("profiles").select("*").eq("id",u.id).maybeSingle();if(!data){data={id:u.id,email:u.email,full_name:u.user_metadata?.full_name||u.email,role:"employee",approved:false};await sb.from("profiles").insert(data)}state.profile=data;await loadAll()}
-async function loadAll(){
-  const r=await Promise.all([
-    safe(sb.from("jobs").select("*").order("id",{ascending:false})),
-    safe(sb.from("profiles").select("*").order("full_name")),
-    safe(sb.from("job_assignments").select("*").order("id",{ascending:false})),
-    safe(sb.from("timesheets").select("*").order("id",{ascending:false})),
-    safe(sb.from("leave_requests").select("*").order("id",{ascending:false})),
-    safe(sb.from("attendance").select("*").order("id",{ascending:false})),
-    safe(sb.from("payroll_documents").select("*").order("id",{ascending:false})),
-    safe(sb.from("route_plans").select("*").order("id",{ascending:false})),
-    safe(sb.from("bonuses").select("*").order("id",{ascending:false})),
-    safe(sb.from("shift_premiums").select("*").order("id",{ascending:false})),
-    safe(sb.from("chat_messages").select("*").order("id",{ascending:false}).limit(200)),
-    safe(sb.from("location_logs").select("*").order("id",{ascending:false}).limit(500)),
-    safe(sb.from("job_images").select("*").order("created_at",{ascending:false})),
-    safe(sb.from("job_excel_files").select("*").order("created_at",{ascending:false})),
-    safe(sb.from("job_visible_profiles").select("*"))
-  ]);
-  ["jobs","profiles","assignments","timesheets","leaves","attendance","payslips","routes","bonuses","premiums","chats","locations","job_images","job_excel_files","job_visibility"].forEach((k,i)=>state[k]=r[i]||[]);
-}
+async function loadAll(){const r=await Promise.all([safe(sb.from("jobs").select("*").order("id",{ascending:false})),safe(sb.from("profiles").select("*").order("full_name")),safe(sb.from("job_assignments").select("*").order("id",{ascending:false})),safe(sb.from("timesheets").select("*").order("id",{ascending:false})),safe(sb.from("leave_requests").select("*").order("id",{ascending:false})),safe(sb.from("attendance").select("*").order("id",{ascending:false})),safe(sb.from("payroll_documents").select("*").order("id",{ascending:false})),safe(sb.from("route_plans").select("*").order("id",{ascending:false})),safe(sb.from("bonuses").select("*").order("id",{ascending:false})),safe(sb.from("shift_premiums").select("*").order("id",{ascending:false})),safe(sb.from("chat_messages").select("*").order("id",{ascending:false}).limit(100)),safe(sb.from("location_logs").select("*").order("id",{ascending:false}).limit(500))]);["jobs","profiles","assignments","timesheets","leaves","attendance","payslips","routes","bonuses","premiums","chats","locations"].forEach((k,i)=>state[k]=r[i])}
 async function login(e){e.preventDefault();const f=new FormData(e.target),{error}=await sb.auth.signInWithPassword({email:f.get("email"),password:f.get("password")});if(error)return msg(error.message);location.reload()}
 async function register(e){e.preventDefault();const f=new FormData(e.target),{error}=await sb.auth.signUp({email:f.get("email"),password:f.get("password"),options:{data:{full_name:f.get("name"),phone:f.get("phone")}}});if(error)return msg(error.message);msg("Registrierung erstellt. Admin muss freigeben.")}
 async function logout(){await sb.auth.signOut();location.reload()}
@@ -450,86 +431,7 @@ async function delTime(id){if(confirm("Stunden löschen?")){const r=await sb.fro
 async function saveLeave(e){e.preventDefault();const f=new FormData(e.target),id=f.get("id"),pid=f.get("profile_id")||myId();let au_file_path=null,file=f.get("file");if(file&&file.size){const path=`au/${pid}/${Date.now()}-${file.name}`,up=await sb.storage.from("payslips").upload(path,file,{upsert:true});if(up.error)return msg(up.error.message);au_file_path=path}const row={profile_id:pid,employee_id:pid,type:f.get("leave_type"),leave_type:f.get("leave_type"),start_date:f.get("start_date"),end_date:f.get("end_date"),reason:f.get("reason"),status:id?f.get("status"):"pending",au_file_path};const r=id?await sb.from("leave_requests").update(row).eq("id",id):await sb.from("leave_requests").insert(row);if(r.error)return msg(r.error.message);await apiPush("Neuer Antrag",nameOf(pid)+" hat "+row.leave_type+" eingereicht");closeModal();await loadAll();render()}
 async function reviewLeave(id,status){const r=await sb.from("leave_requests").update({status,approved:status==="approved",reviewed_at:new Date().toISOString(),reviewed_by:myId()}).eq("id",id);if(r.error)return msg(r.error.message);await loadAll();render()}
 async function quickApprove(id){const r=await sb.from("profiles").update({approved:true}).eq("id",id);if(r.error)return msg(r.error.message);await loadAll();render()}
-async 
-function fullNameOfProfile(p){return [p?.first_name,p?.last_name].filter(Boolean).join(" ")||p?.full_name||p?.email||""}
-function pidOfRow(x){return x?.profile_id||x?.employee_id||x?.user_id||""}
-async function openJobImage(path){const r=await sb.storage.from("job-images").createSignedUrl(path,3600);if(r.error)return msg(r.error.message);window.open(r.data.signedUrl,"_blank")}
-async function uploadJobImage(jobId){
-  const inp=document.createElement("input");inp.type="file";inp.accept="image/*";inp.multiple=true;
-  inp.onchange=async function(){
-    for(const file of inp.files){
-      const path=`job-${jobId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
-      const up=await sb.storage.from("job-images").upload(path,file,{upsert:false});
-      if(up.error){msg(up.error.message);continue}
-      const r=await sb.from("job_images").insert({job_id:jobId,profile_id:myId(),file_path:path,file_name:file.name});
-      if(r.error)msg(r.error.message);
-    }
-    await loadAll();render();
-  };
-  inp.click();
-}
-async function delJobImage(id,path){if(!confirm("Bild löschen?"))return;await sb.storage.from("job-images").remove([path]);const r=await sb.from("job_images").delete().eq("id",id);if(r.error)return msg(r.error.message);await loadAll();render()}
-async function openJobExcel(path){const r=await sb.storage.from("job-excel").createSignedUrl(path,3600);if(r.error)return msg(r.error.message);window.open(r.data.signedUrl,"_blank")}
-async function uploadJobExcel(jobId){
-  const inp=document.createElement("input");inp.type="file";inp.accept=".xlsx";
-  inp.onchange=async function(){
-    const file=inp.files[0];if(!file)return;
-    if(!file.name.toLowerCase().endsWith(".xlsx"))return msg("Bitte .xlsx hochladen.");
-    const path=`job-${jobId}/template-${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
-    const up=await sb.storage.from("job-excel").upload(path,file,{upsert:false});
-    if(up.error)return msg(up.error.message);
-    const r=await sb.from("job_excel_files").insert({job_id:jobId,uploaded_by:myId(),template_path:path,template_name:file.name,status:"template"});
-    if(r.error)return msg(r.error.message);
-    await loadAll();render();
-  };
-  inp.click();
-}
-async function generateJobExcel(jobId,fileId){
-  await loadAll();
-  const job=jobOf(jobId);
-  const file=state.job_excel_files.find(f=>String(f.id)===String(fileId))||state.job_excel_files.find(f=>String(f.job_id)===String(jobId));
-  if(!file)return msg("Bitte zuerst Kunden-Excel hochladen.");
-  const employees=state.assignments.filter(a=>String(a.job_id)===String(jobId)).map(a=>state.profiles.find(p=>p.id===pidOfRow(a))).filter(Boolean).map(p=>({
-    first_name:p.first_name||String(p.full_name||"").split(" ")[0]||"",
-    last_name:p.last_name||String(p.full_name||"").split(" ").slice(1).join(" ")||"",
-    full_name:fullNameOfProfile(p),
-    email:p.email||"",phone:p.phone||"",guard_id:p.guard_id||"",epin:p.epin||p.e_pin||"",tax_id:p.tax_id||"",qualification:p.qualification||""
-  }));
-  if(!employees.length)return msg("Keine Mitarbeiter im Auftrag eingetragen.");
-  const res=await fetch("/api/fill-excel",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({jobId,fileId:file.id,templatePath:file.template_path,templateName:file.template_name,employees,job:{title:job?.title,client:job?.client,location:job?.location,address:job?.address,job_date:jobDate(job),start_time:job?.start_time,end_time:job?.end_time}})});
-  let data={},raw="";try{raw=await res.text();data=JSON.parse(raw)}catch(e){data={error:raw||"Keine API-Antwort"}}
-  if(!res.ok)return msg("Excel konnte nicht erstellt werden: "+(data.error||("HTTP "+res.status)));
-  await sb.from("job_excel_files").update({generated_path:data.generatedPath,generated_name:data.generatedName,status:"generated",generated_at:new Date().toISOString()}).eq("id",file.id);
-  await loadAll();render();msg("Excel wurde erstellt.");
-}
-async function delJobExcel(id){
-  const f=state.job_excel_files.find(x=>String(x.id)===String(id));if(!f||!confirm("Excel-Datei löschen?"))return;
-  const paths=[f.template_path,f.generated_path].filter(Boolean);if(paths.length)await sb.storage.from("job-excel").remove(paths);
-  const r=await sb.from("job_excel_files").delete().eq("id",id);if(r.error)return msg(r.error.message);await loadAll();render();
-}
-function jobMediaHtml(jobId){
-  const imgs=(state.job_images||[]).filter(i=>String(i.job_id)===String(jobId));
-  const excels=(state.job_excel_files||[]).filter(f=>String(f.job_id)===String(jobId));
-  return `<div style="margin-top:10px;border-top:1px solid #eee;padding-top:8px"><b>Bilder:</b><br>
-  ${imgs.map(i=>`<button class="secondary" onclick="openJobImage('${String(i.file_path).replace(/'/g,"\\'")}')">📷 ${esc(i.file_name||"Bild")}</button>${admin()?` <button class="danger" onclick="delJobImage(${i.id},'${String(i.file_path).replace(/'/g,"\\'")}')">x</button>`:""}`).join(" ")||"<small>Keine Bilder</small>"} <button onclick="uploadJobImage(${jobId})">+ Bild</button>
-  ${admin()?`<br><br><b>Kunden-Excel:</b><br>${excels.map(f=>`<div style="margin:6px 0"><button class="secondary" onclick="openJobExcel('${String(f.template_path).replace(/'/g,"\\'")}')">Vorlage: ${esc(f.template_name||"Excel")}</button> <button onclick="generateJobExcel(${jobId},${f.id})">Generieren</button> ${f.generated_path?`<button class="ok" onclick="openJobExcel('${String(f.generated_path).replace(/'/g,"\\'")}')">Fertige Excel herunterladen</button>`:""} <button class="danger" onclick="delJobExcel(${f.id})">Löschen</button></div>`).join("")||"<small>Keine Excel hinterlegt</small>"} <button onclick="uploadJobExcel(${jobId})">+ Kunden-Excel hochladen</button>`:""}</div>`;
-}
-async function sendChatImage(toPid){
-  const inp=document.createElement("input");inp.type="file";inp.accept="image/*";
-  inp.onchange=async function(){
-    const file=inp.files[0];if(!file)return;
-    const path=`chat/${myId()}-${toPid}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
-    const up=await sb.storage.from("chat-images").upload(path,file,{upsert:false});
-    if(up.error)return msg(up.error.message);
-    const r=await sb.from("chat_messages").insert({from_profile_id:myId(),to_profile_id:toPid,body:"[Bild]",image_path:path,image_name:file.name});
-    if(r.error)return msg(r.error.message);
-    await loadAll();render();
-  };
-  inp.click();
-}
-async function openChatImage(path){const r=await sb.storage.from("chat-images").createSignedUrl(path,3600);if(r.error)return msg(r.error.message);window.open(r.data.signedUrl,"_blank")}
-
-async function saveProfile(e){e.preventDefault();const f=new FormData(e.target),targetId=f.get("id");let current=state.profiles.find(p=>p.id===targetId)||state.profile;const first=String(f.get("first_name")||"").trim(),last=String(f.get("last_name")||"").trim();let row={phone:f.get("phone"),address:f.get("address"),emergency_contact:f.get("emergency_contact")};if(admin()){Object.assign(row,{first_name:first,last_name:last,full_name:[first,last].filter(Boolean).join(" "),role:f.get("role")||"employee",approved:f.get("approved")==="on",guard_id:f.get("guard_id"),epin:f.get("epin"),e_pin:f.get("epin"),tax_id:f.get("tax_id"),qualification:f.get("qualification"),iban:f.get("iban"),hourly_rate:Number(f.get("hourly_rate")||0)})}else{Object.assign(row,{first_name:current.first_name,last_name:current.last_name,full_name:current.full_name,role:current.role,approved:current.approved,guard_id:current.guard_id,epin:current.epin,e_pin:current.e_pin,tax_id:current.tax_id,qualification:current.qualification,iban:current.iban,hourly_rate:current.hourly_rate})}const r=await sb.from("profiles").update(row).eq("id",targetId);if(r.error)return msg(r.error.message);closeModal();await loadAll();await loadProfile();render()}
+async function saveProfile(e){e.preventDefault();const f=new FormData(e.target),targetId=f.get("id");let current=state.profiles.find(p=>p.id===targetId)||state.profile;let row={phone:f.get("phone"),address:f.get("address"),emergency_contact:f.get("emergency_contact")};if(admin()){Object.assign(row,{full_name:f.get("full_name"),role:f.get("role")||"employee",approved:f.get("approved")==="on",guard_id:f.get("guard_id"),tax_id:f.get("tax_id"),qualification:f.get("qualification"),iban:f.get("iban"),hourly_rate:Number(f.get("hourly_rate")||0)})}else{Object.assign(row,{full_name:current.full_name,role:current.role,approved:current.approved,guard_id:current.guard_id,tax_id:current.tax_id,qualification:current.qualification,iban:current.iban,hourly_rate:current.hourly_rate})}const r=await sb.from("profiles").update(row).eq("id",targetId);if(r.error)return msg(r.error.message);closeModal();await loadAll();await loadProfile();render()}
 async function saveBonus(e){e.preventDefault();const f=new FormData(e.target),r=await sb.from("bonuses").insert({profile_id:f.get("profile_id"),amount:Number(f.get("amount")||0),reason:f.get("reason"),created_by:myId()});if(r.error)return msg(r.error.message);closeModal();await loadAll();render()}
 async function saveRoute(e){e.preventDefault();const f=new FormData(e.target),jobId=f.get("job_id"),ids=[...document.querySelectorAll(".routeEmp:checked")].map(x=>x.value),r=await sb.from("route_plans").insert({job_id:jobId,driver_profile_id:f.get("driver_profile_id"),passenger_profile_ids:ids,meeting_time:f.get("meeting_time"),meeting_point:f.get("meeting_point"),notes:f.get("notes"),created_by:myId()});if(r.error)return msg(r.error.message);await apiPush("Fahrplan aktualisiert","Fahrplan für "+(jobOf(jobId)?.title||"Einsatz"),ids);closeModal();await loadAll();render()}
 async function sendChat(e){e.preventDefault();const f=new FormData(e.target),to=f.get("to_profile_id"),body=f.get("body"),r=await sb.from("chat_messages").insert({from_profile_id:myId(),to_profile_id:to,body});if(r.error)return msg(r.error.message);await apiPush("Neue SXG Nachricht",nameOf(myId())+": "+body,[to]);await loadAll();render()}
@@ -549,7 +451,7 @@ function authHtml(){return `<div class="auth"><div class="auth-card"><h1>SXG Sic
 function appHtml(){const ap=[["dashboard","Dashboard"],["jobs","Aufträge"],["assignments","Einsätze"],["schedule","Dienstplan"],["adminhours","Stunden Admin"],["livewage","Live-Lohn"],["tracking","Live-Tracking"],["maps","Karten"],["leave","Urlaub/Krank"],["employees","Mitarbeiter"],["payroll","Lohn"],["routes","Fahrpläne"],["chat","Chat"],["profile","Profil"]],ep=[["dashboard","Dashboard"],["jobs","Offene Einsätze"],["assignments","Meine Einsätze"],["schedule","Mein Dienstplan"],["timesheets","Meine Stunden"],["leave","Mein Urlaub/Krank"],["payroll","Lohn"],["routes","Fahrpläne"],["chat","Chat"],["profile","Profil"]],pages=admin()?ap:ep;return `<div class="app"><aside class="side ${state.openSide?'open':''}"><div class="logo">SXG<small>Sicherheit & Service GmbH</small></div><div class="nav">${pages.map(p=>`<button class="${state.page===p[0]?'active':''}" onclick="setPage('${p[0]}')">${p[1]}</button>`).join("")}</div><div class="userbox"><b>${esc(state.profile.full_name)}</b><br><small>${admin()?'Admin':'Mitarbeiter'}</small><br><br><button class="secondary" onclick="askPush()">Push aktivieren</button></div></aside><main class="main"><div class="top"><button class="mobile secondary" onclick="state.openSide=!state.openSide;render()">☰</button><div><h1>${pages.find(p=>p[0]===state.page)?.[1]||"Portal"}</h1></div><button class="secondary" onclick="sxgSafeRefresh()">Aktualisieren</button><button class="secondary" onclick="logout()">Abmelden</button></div>${contentHtml()}</main>${modalHtml()}</div>`}
 function contentHtml(){if(state.page==="dashboard")return dashboardHtml();if(state.page==="jobs")return jobsHtml();if(state.page==="assignments")return assignmentsHtml();if(state.page==="schedule")return scheduleHtml();if(state.page==="timesheets")return timesHtml(false);if(state.page==="adminhours")return timesHtml(true);if(state.page==="livewage")return liveWageHtml();if(state.page==="tracking")return trackingHtml();if(state.page==="maps")return mapsHtml();if(state.page==="leave")return leaveHtml();if(state.page==="employees")return employeesHtml();if(state.page==="payroll")return payrollHtml();if(state.page==="routes")return routesHtml();if(state.page==="chat")return chatHtml();if(state.page==="profile")return profileHtml();return""}
 function dashboardHtml(){if(admin())return `<section class="panel"><div class="toolbar"><button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button><h2>${monthKey()}</h2><button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button></div></section><div class="cards"><div class="card"><h3>Mitarbeiter</h3><h1>${state.profiles.length}</h1></div><div class="card"><h3>Aufträge</h3><h1>${state.jobs.length}</h1></div><div class="card"><h3>Monatsstunden</h3><h1>${state.timesheets.filter(t=>isInSelectedMonth(rowDate(t))).reduce((s,t)=>s+Number(t.hours_worked||t.hours||0),0).toFixed(1)}</h1></div><div class="card"><h3>Trackingpunkte</h3><h1>${state.locations.length}</h1></div><div class="card"><h3>Abgeschlossene Einsätze</h3><h1>${state.assignments.filter(a=>assignmentStatus(a)==="abgeschlossen"||isJobExpired(jobOf(a.job_id)||{})).length}</h1></div></div>`;let hrs=myHours(),money=myMoney(),pct=Math.min(100,hrs/160*100);return `<section class="panel"><div class="toolbar"><button class="secondary" onclick="state.month--;if(state.month<0){state.month=11;state.year--};render()">← Monat</button><h2>${monthKey()}</h2><button class="secondary" onclick="state.month++;if(state.month>11){state.month=0;state.year++};render()">Monat →</button></div></section><div class="cards"><div class="card"><h3>Meine Stunden/Lohn</h3><div class="donut" style="--p:${pct}%"><div><b>${hrs.toFixed(1)} Std.</b><br>${money.toFixed(2)} €</div></div></div><div class="card"><h3>Meine Einsätze</h3><h1>${myAssignments().length}</h1></div></div>`}
-function jobsHtml(){const list=state.jobs.filter(j=>admin()||((j.status||"open")==="open"&&!isJobExpired(j)&&(!jobDate(j)||jobDate(j)>=today())));return `<section class="panel"><div class="toolbar"><h2>${admin()?'Aufträge verwalten':'Offene Einsätze'}</h2>${admin()?`<button onclick="openModal('job')">+ Auftrag</button> <button onclick="openModal('repeat')">Wiederholen</button>`:""}</div><div class="table">${list.map(j=>{let c=assignedCount(j.id),max=Number(j.needed_employees||1),full=c>=max,mine=isAssigned(j.id),open=window.sxgOpenAttendance?window.sxgOpenAttendance(myId(),j.id):null;return `<div class="row"><div><b>${esc(j.title)}</b><br>${esc(j.client)} · ${esc(j.location)}<br>${esc(j.address||"")}<br>${esc(jobDate(j))} ${esc(j.start_time)}-${esc(j.end_time)}<br>${!admin()&&checkInBlockReason(j)?`<small>${esc(checkInBlockReason(j))}</small><br>`:""}${admin()?`<b>Eingetragen:</b> ${state.assignments.filter(a=>String(a.job_id)===String(j.id)).map(a=>`${esc(nameOf(a.profile_id||a.employee_id))} <button class='danger' onclick="unassignJob(${j.id},'${a.profile_id||a.employee_id}')">x</button>`).join(" ")||"niemand"}<br><b>Reserve:</b> ${state.waitlist.filter(w=>String(w.job_id)===String(j.id)).map(w=>`${esc(nameOf(w.profile_id))} <button class='secondary' onclick="promoteWaitlist(${j.id},'${w.profile_id}')">einsetzen</button>`).join(" ")||"niemand"}`:""}${jobMediaHtml(j.id)}</div><span>${c}/${max}</span><span class="badge ${full?'warn':'ok'}">${full?'voll':'frei'}</span><div>${admin()?`<button class="secondary" onclick="openModal('assign',${j.id})">Eintragen</button> <button class="secondary" onclick="openJobMapById(${j.id})">Karte</button> <button class="secondary" onclick="openModal('job',${j.id})">Bearbeiten</button> <button class="secondary" onclick="openModal('jobVisibility',${j.id})">Sichtbarkeit</button> <button class="secondary" onclick="openModal('jobMessage',${j.id})">Senden</button> <button class="danger" onclick="delJob(${j.id})">Löschen</button>`:open?`<button class="ok" onclick="checkOut()">Check-out</button>`:mine?`<button class="ok" onclick="checkIn(${j.id})" ${canEmployeeCheckIn(j)?"":"disabled"}>Check-in</button> <button class="secondary" onclick="unassignJob(${j.id})">Austragen</button>`:`<button onclick="assignJob(${j.id})" ${full?'disabled':''}>Eintragen</button> ${full?(isWaitlisted(j.id)?`<button class="secondary" onclick="removeWaitlist(${j.id})">Reserve löschen</button>`:`<button class="secondary" onclick="joinWaitlist(${j.id})">Reserve</button>`):""}`}</div></div>`}).join("")||`<div class="empty">Keine Einsätze</div>`}</div></section>`}
+function jobsHtml(){const list=state.jobs.filter(j=>admin()||((j.status||"open")==="open"&&!isJobExpired(j)&&(!jobDate(j)||jobDate(j)>=today())));return `<section class="panel"><div class="toolbar"><h2>${admin()?'Aufträge verwalten':'Offene Einsätze'}</h2>${admin()?`<button onclick="openModal('job')">+ Auftrag</button> <button onclick="openModal('repeat')">Wiederholen</button>`:""}</div><div class="table">${list.map(j=>{let c=assignedCount(j.id),max=Number(j.needed_employees||1),full=c>=max,mine=isAssigned(j.id);return `<div class="row"><div><b>${esc(j.title)}</b><br>${esc(j.client)} · ${esc(j.location)}<br>${esc(j.address||"")}<br>${esc(jobDate(j))} ${esc(j.start_time)}-${esc(j.end_time)}<br>${!admin()&&checkInBlockReason(j)?`<small>${esc(checkInBlockReason(j))}</small><br>`:""}${admin()?`<b>Eingetragen:</b> ${state.assignments.filter(a=>String(a.job_id)===String(j.id)).map(a=>`${esc(nameOf(a.profile_id||a.employee_id))} <button class='danger' onclick="unassignJob(${j.id},'${a.profile_id||a.employee_id}')">x</button>`).join(" ")||"niemand"}<br><b>Reserve:</b> ${state.waitlist.filter(w=>String(w.job_id)===String(j.id)).map(w=>`${esc(nameOf(w.profile_id))} <button class='secondary' onclick="promoteWaitlist(${j.id},'${w.profile_id}')">einsetzen</button>`).join(" ")||"niemand"}`:""}</div><span>${c}/${max}</span><span class="badge ${full?'warn':'ok'}">${full?'voll':'frei'}</span><div>${admin()?`<button class="secondary" onclick="openModal('assign',${j.id})">Eintragen</button> <button class="secondary" onclick="openJobMapById(${j.id})">Karte</button> <button class="secondary" onclick="openModal('job',${j.id})">Bearbeiten</button> <button class="danger" onclick="delJob(${j.id})">Löschen</button>`:mine?`<button class="ok" onclick="checkIn(${j.id})" ${canEmployeeCheckIn(j)?"":"disabled"}>Check-in</button> <button class="secondary" onclick="unassignJob(${j.id})">Austragen</button>`:`<button onclick="assignJob(${j.id})" ${full?'disabled':''}>Eintragen</button> ${full?(isWaitlisted(j.id)?`<button class="secondary" onclick="removeWaitlist(${j.id})">Reserve entfernen</button>`:`<button class="secondary" onclick="joinWaitlist(${j.id})">Reserve</button>`):``}`}</div></div>`}).join("")||`<div class="empty">Keine Einsätze</div>`}</div></section>`}
 function assignmentStatus(a){
   const pid=a.profile_id||a.employee_id
   const att=state.attendance.find(x=>String(x.job_id)===String(a.job_id)&&(x.profile_id||x.employee_id)===pid)
@@ -638,7 +540,7 @@ function leaveHtml(){const rows=admin()?state.leaves:myLeaves();return `<section
 function employeesHtml(){return `<section class="panel"><h2>Mitarbeiter-Katalog</h2><div class="cards">${state.profiles.map(p=>`<div class="card"><h3>${esc(p.full_name)}</h3><p>${esc(p.email)}</p><p><span class="badge ${p.approved?'ok':'warn'}">${esc(p.role)} · ${p.approved?'aktiv':'wartet'}</span></p><p>Lohn: ${esc(p.hourly_rate||0)} €/h<br>Bewacher-ID: ${esc(p.guard_id||"—")}</p><button onclick="openModal('profile','${p.id}')">Bearbeiten/Freigeben</button> ${p.approved?``:`<button class="secondary" onclick="quickApprove('${p.id}')">Schnell freigeben</button>`}</div>`).join("")}</div></section>`}
 function payrollHtml(){const rows=admin()?state.payslips:state.payslips.filter(p=>p.profile_id===myId());return `<section class="panel"><div class="toolbar"><h2>Lohnabrechnungen</h2>${admin()?`<button onclick="openModal('payroll')">+ PDF</button>`:""}</div><div class="table">${rows.map(p=>`<div class="row"><div><b>${esc(p.title)}</b><br>${esc(admin()?nameOf(p.profile_id):"Meine Abrechnung")} · ${esc(p.month)}</div><span>${esc(p.file_name)}</span><span class="badge ok">PDF</span><button onclick="openFile('${esc(p.file_path)}')">Öffnen</button></div>`).join("")||`<div class="empty">Keine PDFs</div>`}</div></section>`}
 function routesHtml(){const myJobIds=myAssignments().map(a=>String(a.job_id));const rows=admin()?state.routes:state.routes.filter(r=>myJobIds.includes(String(r.job_id))&&((r.passenger_profile_ids||[]).includes(myId())||r.driver_profile_id===myId()));return `<section class="panel"><div class="toolbar"><h2>Fahrpläne</h2>${admin()?`<button onclick="openModal('route')">+ Fahrplan</button>`:""}</div><div class="table">${rows.map(r=>`<div class="row"><div><b>${esc(jobOf(r.job_id)?.title||"Einsatz")}</b><br>Fahrer: ${esc(nameOf(r.driver_profile_id))}<br>Treffpunkt: ${esc(r.meeting_point)} · ${esc(r.meeting_time)}<br>${esc(r.notes)}</div><span>${(r.passenger_profile_ids||[]).map(nameOf).join(", ")}</span><span class="badge ok">Fahrplan</span><span></span></div>`).join("")||`<div class="empty">Keine Fahrpläne</div>`}</div></section>`}
-function chatHtml(){const rows=state.chats.filter(c=>admin()||c.from_profile_id===myId()||c.to_profile_id===myId());const people=state.profiles.filter(p=>p.id!==myId());return `<section class="panel"><h2>Chat</h2><form class="form" id="chatForm"><select name="to_profile_id">${people.map(p=>`<option value="${p.id}">${esc(nameOf(p.id))}</option>`).join("")}</select><input name="body" placeholder="Nachricht"><button>Senden</button></form><br><h3>Bild senden</h3><div class="toolbar"><select id="chatImageTo">${people.map(p=>`<option value="${p.id}">${esc(nameOf(p.id))}</option>`).join("")}</select><button onclick="sendChatImage(document.getElementById('chatImageTo').value)">+ Bild senden</button></div><br><div class="table">${rows.map(c=>`<div class="row"><div><b>${esc(nameOf(c.from_profile_id))} → ${esc(nameOf(c.to_profile_id))}</b><br>${c.image_path?`<button class="secondary" onclick="openChatImage('${String(c.image_path).replace(/'/g,"\\'")}')">📷 ${esc(c.image_name||"Bild öffnen")}</button>`:esc(c.body)}</div><span>${esc(c.created_at||"")}</span><span></span><span></span></div>`).join("")||`<div class="empty">Keine Nachrichten</div>`}</div></section>`}
+function chatHtml(){const rows=state.chats.filter(c=>admin()||c.from_profile_id===myId()||c.to_profile_id===myId());return `<section class="panel"><h2>Chat</h2><form class="form" id="chatForm"><select name="to_profile_id">${state.profiles.filter(p=>p.id!==myId()).map(p=>`<option value="${p.id}">${esc(p.full_name||p.email)}</option>`).join("")}</select><input name="body" placeholder="Nachricht"><button>Senden</button></form><br><div class="table">${rows.map(c=>`<div class="row"><div><b>${esc(nameOf(c.from_profile_id))} → ${esc(nameOf(c.to_profile_id))}</b><br>${esc(c.body)}</div><span>${esc(c.created_at||"")}</span><span></span><span></span></div>`).join("")||`<div class="empty">Keine Nachrichten</div>`}</div></section>`}
 function profileHtml(){return `<section class="panel"><h2>Mein Profil</h2><div class="cards"><div class="card"><b>${esc(state.profile.full_name)}</b><p>${esc(state.profile.email)}</p><p>Bewacher-ID: ${esc(state.profile.guard_id||"—")}<br>Stundenlohn: ${esc(state.profile.hourly_rate||0)} €/h</p><button onclick="openModal('profile','${state.profile.id}')">Profil bearbeiten</button></div><div class="card"><h3>Push</h3><button onclick="askPush()">Push aktivieren</button></div></div></section>`}
 function modalHtml(){if(!state.modal)return"";const{type,id}=state.modal;
 if(type==="wagedetail"){const p=state.profiles.find(x=>x.id===id)||{},s=employeeMonthSummary(id),days=dayBreakdown(id),pct=Math.min(100,s.hours/160*100);return modal("Live-Lohn: "+esc(p.full_name||p.email),`<div class="cards"><div class="card"><h3>Monat</h3><h1>${monthKey()}</h1></div><div class="card"><h3>Gesamtstunden</h3><h1>${s.hours.toFixed(1)} h</h1></div><div class="card"><h3>Gesamtverdienst</h3><h1>${s.total.toFixed(2)} €</h1></div><div class="card"><h3>Zuschläge</h3><h1>${s.premium.toFixed(2)} €</h1></div><div class="card"><h3>Prämien</h3><h1>${s.bonus.toFixed(2)} €</h1></div></div><br><div class="card"><h3>Kreisdiagramm</h3><div class="donut" style="--p:${pct}%"><div><b>${s.hours.toFixed(1)} Std.</b><br>${s.total.toFixed(2)} €</div></div></div><br><h3>Tagesdetails</h3><div class="table">${days.map(d=>`<div class="row"><div><b>${esc(d.date)}</b><br>${d.items.map(t=>esc(jobOf(t.job_id)?.title||t.activity||"Stunden")).join("<br>")}</div><span>${d.hours.toFixed(1)} h</span><span>${(d.wage+d.premium).toFixed(2)} €<br><small>inkl. ${d.premium.toFixed(2)} € Zuschlag</small></span><span></span></div>`).join("")||`<div class="empty">Keine Stunden in diesem Monat</div>`}</div><br><h3>Prämien</h3><div class="table">${s.bonuses.map(b=>`<div class="row"><div><b>${esc(b.reason||"Prämie")}</b><br>${esc(b.created_at||"")}</div><span></span><span>${Number(b.amount||0).toFixed(2)} €</span><span>${admin()?`<button class="secondary" onclick="openModal(\'bonus\',${b.id})">Bearbeiten</button> <button class="danger" onclick="delBonus(${b.id})">Löschen</button>`:""}</span></div>`).join("")||`<div class="empty">Keine Prämien in diesem Monat</div>`}</div>`)}
@@ -646,7 +548,7 @@ if(type==="job"){const j=jobOf(id)||{};return modal("Auftrag",`<form class="form
 if(type==="assign")return modal("Mitarbeiter eintragen",`<div class="table">${state.profiles.map(p=>`<div class="row"><b>${esc(p.full_name||p.email)}</b><span>${esc(p.role)}</span><span></span><button onclick="assignJob(${id},'${p.id}')">Eintragen</button></div>`).join("")}</div>`);
 if(type==="time"){const t=state.timesheets.find(x=>String(x.id)===String(id))||{};return modal("Stunden",`<form class="form" id="timeForm"><input type="hidden" name="id" value="${esc(t.id||"")}">${admin()?`<select name="profile_id">${state.profiles.map(p=>`<option value="${p.id}" ${(t.profile_id||myId())===p.id?"selected":""}>${esc(p.full_name||p.email)}</option>`).join("")}</select>`:""}<select name="job_id"><option value="">Kein Auftrag</option>${state.jobs.map(j=>`<option value="${j.id}" ${String(t.job_id)===String(j.id)?"selected":""}>${esc(j.title)}</option>`).join("")}</select><input type="date" name="work_date" value="${esc(t.work_date||"")}"><input name="start_time" placeholder="Start" value="${esc(t.start_time||"")}"><input name="end_time" placeholder="Ende" value="${esc(t.end_time||"")}"><input type="number" name="break_minutes" placeholder="Pause Minuten, wird abgezogen" value="${esc(t.break_minutes||0)}"><input type="number" step="0.25" name="hours_worked" placeholder="Stunden werden aus Start/Ende/Pause berechnet" value="${esc(t.hours_worked||t.hours||"")}"><input name="location" placeholder="Standort" value="${esc(t.location||"")}"><input name="activity" placeholder="Tätigkeit" value="${esc(t.activity||"")}"><textarea class="full" name="description" placeholder="Beschreibung">${esc(t.description||"")}</textarea>${admin()?`<label class="full"><input type="checkbox" name="approved" ${t.approved?"checked":""}> freigegeben</label>`:""}<button>Speichern</button></form>`)}
 if(type==="leave")return modal("Urlaub/Krankmeldung",`<form class="form" id="leaveForm">${admin()?`<select name="profile_id">${state.profiles.map(p=>`<option value="${p.id}">${esc(p.full_name||p.email)}</option>`).join("")}</select>`:""}<select name="leave_type"><option>Urlaub</option><option>Krankmeldung</option><option>Sonstiges</option></select><input type="date" name="start_date"><input type="date" name="end_date"><input class="full" name="reason" placeholder="Grund"><input class="full" name="file" type="file" accept=".pdf,image/*"><button>Speichern</button></form>`);
-if(type==="profile"){const p=state.profiles.find(x=>x.id===id)||state.profile;let first=p.first_name||String(p.full_name||"").split(" ")[0]||"",last=p.last_name||String(p.full_name||"").split(" ").slice(1).join(" ")||"";return modal("Profil",`<form class="form" id="profileForm"><input type="hidden" name="id" value="${esc(p.id)}">${admin()?`<input name="first_name" value="${esc(first)}" placeholder="Vorname"><input name="last_name" value="${esc(last)}" placeholder="Nachname">`:`<input type="hidden" name="first_name" value="${esc(first)}"><input type="hidden" name="last_name" value="${esc(last)}"><div class="full notice"><b>Name:</b> ${esc([first,last].filter(Boolean).join(" ")||p.full_name||"")}<br>Name, Bewacher-ID, Steuer-ID, E-PIN und Stundenlohn können nur vom Admin geändert werden.</div>`}<input name="phone" value="${esc(p.phone||"")}" placeholder="Telefon">${admin()?`<input name="role" value="${esc(p.role||"employee")}" placeholder="Rolle"><input name="hourly_rate" type="number" step="0.01" value="${esc(p.hourly_rate||0)}" placeholder="Stundenlohn"><input name="guard_id" value="${esc(p.guard_id||"")}" placeholder="Bewacher-ID"><input name="epin" value="${esc(p.epin||p.e_pin||"")}" placeholder="E-PIN"><input name="tax_id" value="${esc(p.tax_id||"")}" placeholder="Steuer-ID">`:`<input type="hidden" name="role" value="${esc(p.role||"employee")}"><input type="hidden" name="hourly_rate" value="${esc(p.hourly_rate||0)}"><input type="hidden" name="guard_id" value="${esc(p.guard_id||"")}"><input type="hidden" name="epin" value="${esc(p.epin||p.e_pin||"")}"><input type="hidden" name="tax_id" value="${esc(p.tax_id||"")}">`}<input name="address" value="${esc(p.address||"")}" placeholder="Adresse"><input name="emergency_contact" value="${esc(p.emergency_contact||"")}" placeholder="Notfallkontakt">${admin()?`<input name="qualification" value="${esc(p.qualification||"")}" placeholder="Qualifikation"><input name="iban" value="${esc(p.iban||"")}" placeholder="IBAN"><label class="full"><input type="checkbox" name="approved" ${p.approved?"checked":""}> freigegeben</label>`:`<input type="hidden" name="qualification" value="${esc(p.qualification||"")}"><input type="hidden" name="iban" value="${esc(p.iban||"")}"><input type="hidden" name="approved" value="${p.approved?'on':''}">`}<button>Speichern</button></form>`)}
+if(type==="profile"){const p=state.profiles.find(x=>x.id===id)||state.profile;return modal("Profil",`<form class="form" id="profileForm"><input type="hidden" name="id" value="${esc(p.id)}">${admin()?`<input name="full_name" value="${esc(p.full_name||"")}" placeholder="Name">`:`<input type="hidden" name="full_name" value="${esc(p.full_name||"")}"><div class="full notice"><b>Name:</b> ${esc(p.full_name||"")}<br>Name, Bewacher-ID, Steuer-ID und Stundenlohn können nur vom Admin geändert werden.</div>`}<input name="phone" value="${esc(p.phone||"")}" placeholder="Telefon">${admin()?`<input name="role" value="${esc(p.role||"employee")}" placeholder="Rolle"><input name="hourly_rate" type="number" step="0.01" value="${esc(p.hourly_rate||0)}" placeholder="Stundenlohn"><input name="guard_id" value="${esc(p.guard_id||"")}" placeholder="Bewacher-ID"><input name="tax_id" value="${esc(p.tax_id||"")}" placeholder="Steuer-ID">`:`<input type="hidden" name="role" value="${esc(p.role||"employee")}"><input type="hidden" name="hourly_rate" value="${esc(p.hourly_rate||0)}"><input type="hidden" name="guard_id" value="${esc(p.guard_id||"")}"><input type="hidden" name="tax_id" value="${esc(p.tax_id||"")}">`}<input name="address" value="${esc(p.address||"")}" placeholder="Adresse"><input name="emergency_contact" value="${esc(p.emergency_contact||"")}" placeholder="Notfallkontakt">${admin()?`<input name="qualification" value="${esc(p.qualification||"")}" placeholder="Qualifikation"><input name="iban" value="${esc(p.iban||"")}" placeholder="IBAN"><label class="full"><input type="checkbox" name="approved" ${p.approved?"checked":""}> freigegeben</label>`:`<input type="hidden" name="qualification" value="${esc(p.qualification||"")}"><input type="hidden" name="iban" value="${esc(p.iban||"")}"><input type="hidden" name="approved" value="${p.approved?'on':''}">`}<button>Speichern</button></form>`)}
 if(type==="bonus")return modal("Prämie",`<form class="form" id="bonusForm"><select name="profile_id">${state.profiles.map(p=>`<option value="${p.id}">${esc(p.full_name||p.email)}</option>`).join("")}</select><input name="amount" type="number" step="0.01" placeholder="Betrag"><input class="full" name="reason" placeholder="Begründung"><button>Speichern</button></form>`);
 if(type==="route")return modal("Fahrplan",`<form class="form" id="routeForm"><select name="job_id">${state.jobs.map(j=>`<option value="${j.id}">${esc(j.title)}</option>`).join("")}</select><select name="driver_profile_id">${state.profiles.map(p=>`<option value="${p.id}">${esc(p.full_name||p.email)}</option>`).join("")}</select><input name="meeting_time" placeholder="Uhrzeit"><input name="meeting_point" placeholder="Treffpunkt"><div class="full">${state.profiles.map(p=>`<label><input class="routeEmp" type="checkbox" value="${p.id}"> ${esc(p.full_name||p.email)}</label><br>`).join("")}</div><textarea class="full" name="notes" placeholder="Infos"></textarea><button>Speichern</button></form>`);
 if(type==="adminClockIn")return modal("Nachträglich einstempeln",`<form class="form" id="adminClockInForm"><select name="profile_id">${state.profiles.map(p=>`<option value="${p.id}">${esc(p.full_name||p.email)}</option>`).join("")}</select><select name="job_id">${state.jobs.map(j=>`<option value="${j.id}">${esc(j.title)} · ${esc(jobDate(j))} ${esc(j.start_time||"")}</option>`).join("")}</select><input name="clock_in_at" type="datetime-local"><button>Einstempeln</button></form>`);
@@ -666,7 +568,7 @@ function cleanUiText(){
 
 function bind(){const map={loginForm:login,regForm:register,jobForm:saveJob,timeForm:saveTime,leaveForm:saveLeave,profileForm:saveProfile,bonusForm:saveBonus,adminClockInForm:adminClockIn,adminClockOutForm:adminClockOut,adminClockInForm:adminClockIn,adminClockOutForm:adminClockOut,adminClockInForm:adminClockIn,adminClockOutForm:adminClockOut,premiumForm:savePremium,adminClockInForm:adminClockIn,adminClockOutForm:adminClockOut,adminClockInForm:adminClockIn,adminClockOutForm:adminClockOut,routeForm:saveRoute,chatForm:sendChat,payrollForm:uploadPayroll,repeatForm:createRepeatedJobs};Object.keys(map).forEach(id=>{let el=document.getElementById(id);if(el)el.addEventListener("submit",map[id])})}
 async function refreshPortal(){await loadAll();render()}
-Object.assign(window,{refreshPortal,setPage,openModal,closeModal,logout,delJob,assignJob,unassignJob,checkIn,checkOut,delTime,reviewLeave,askPush,openFile,quickApprove,joinWaitlist,removeWaitlist,promoteWaitlist,openJobMapById,adminClockIn,adminClockOut,state,render,openJobImage,uploadJobImage,delJobImage,openJobExcel,uploadJobExcel,generateJobExcel,delJobExcel,sendChatImage,openChatImage});
+Object.assign(window,{refreshPortal,setPage,openModal,closeModal,logout,delJob,assignJob,unassignJob,checkIn,checkOut,delTime,reviewLeave,askPush,openFile,quickApprove,joinWaitlist,removeWaitlist,promoteWaitlist,openJobMapById,adminClockIn,adminClockOut,state,render});
 
 
 
@@ -1833,7 +1735,7 @@ window.leaveHtml = function(){
     return rows;
   }
 
-  window.jobsHtml = function(){
+  jobsHtml = window.jobsHtml = function(){
     const fp=selectedPid();
     let list=state.jobs.filter(j=>admin()||((j.status||"open")==="open"&&!jobExpired(j)&&(!jobDate(j)||jobDate(j)>=today())));
     if(admin()&&fp){
@@ -1843,7 +1745,7 @@ window.leaveHtml = function(){
     return `${filterBar("Aufträge nach Mitarbeiter filtern")}<section class="panel"><div class="toolbar"><h2>${admin()?'Aufträge verwalten':'Offene Einsätze'}</h2>${admin()?`<button onclick="openModal('job')">+ Auftrag</button> <button onclick="openModal('repeat')">Wiederholen</button>`:""}</div><div class="table">${list.map(j=>{const c=assignedCount(j.id),max=Number(j.needed_employees||1),full=c>=max,mine=isAssigned(j.id),open=openAtt(myId(),j.id);return `<div class="row"><div><b>${esc(j.title)}</b><br>${esc(j.client||"")} · ${esc(j.location||"")}<br>${esc(j.address||"")}<br>${esc(jobDate(j)||"")} ${esc(j.start_time||"")}-${esc(j.end_time||"")}<br>${admin()?`<b>Eingetragen:</b> ${state.assignments.filter(a=>String(a.job_id)===String(j.id)).map(a=>`${esc(nameOf(pidOf(a)))} <button class='danger' onclick="unassignJob(${j.id},'${pidOf(a)}')">x</button>`).join(" ")||"niemand"}`:""}</div><span>${c}/${max}</span><span class="badge ${full?'warn':'ok'}">${full?'voll':'frei'}</span><div>${admin()?`<button class="secondary" onclick="openModal('assign',${j.id})">Eintragen</button> <button class="secondary" onclick="openModal('job',${j.id})">Bearbeiten</button> <button class="danger" onclick="delJob(${j.id})">Löschen</button>`:open?`<button class="ok" onclick="checkOut()">Check-out</button>`:mine?`<button class="ok" onclick="checkIn(${j.id})">Check-in</button> <button class="secondary" onclick="unassignJob(${j.id})">Austragen</button>`:`<button onclick="assignJob(${j.id})" ${full?'disabled':''}>Eintragen</button>`}</div></div>`}).join("")||`<div class="empty">${fp?"Keine Aufträge für diesen Mitarbeiter":"Keine Einsätze"}</div>`}</div></section>`;
   };
 
-  window.assignmentsHtml = function(){
+  assignmentsHtml = window.assignmentsHtml = function(){
     const fp=selectedPid();
     let ass=admin()?state.assignments:myAssignments();
     if(admin()&&fp)ass=ass.filter(a=>pidOf(a)===fp);
@@ -1858,7 +1760,7 @@ window.leaveHtml = function(){
     return `${filterBar("Einsätze nach Mitarbeiter filtern")}<section class="panel"><h2>${admin()?'Einsätze Übersicht':'Meine Einsätze'}</h2><h3>Aktuell</h3><div class="table">${current.map(row).join("")||`<div class="empty">Keine aktuellen Einsätze</div>`}</div><br><h3>Einsatz-Historie</h3><div class="table">${history.map(row).join("")||`<div class="empty">Noch keine abgeschlossenen Einsätze</div>`}</div></section>`;
   };
 
-  window.timesHtml = function(all){
+  timesHtml = window.timesHtml = function(all){
     const rows=timeRowsForFilter(all);
     return `${all&&admin()?filterBar("Stunden nach Mitarbeiter filtern"):""}<section class="panel"><div class="toolbar"><h2>${all?'Alle Stunden':'Meine Stunden'}</h2><button onclick="openModal('time')">+ Stunden</button>${admin()?`<button onclick="openModal('adminClockIn')">+ Mitarbeiter einchecken</button> <button onclick="openModal('adminClockOut')">Mitarbeiter auschecken</button> <button onclick="openModal('bonus')">+ Prämie</button> <button onclick="openModal('premium')">+ Zuschlag</button>`:""}</div><div class="table">${rows.map(t=>`<div class="row"><div><b>${esc(all?nameOf(pidOf(t)):"Meine Stunden")}</b><br>${esc(t.work_date||"")} ${esc(t.start_time||"")}-${esc(t.end_time||"")} · ${esc(t.location||"")}<br>${esc(t.activity||"")} ${esc(t.description||"")}</div><span>${Number(t.hours_worked||t.hours||0).toFixed(4)} Std.</span><span class="badge ${t.approved?'ok':'warn'}">${esc(t.status||"pending")}</span><div><button class="secondary" onclick="openModal('time',${t.id})">Bearbeiten</button>${admin()?` <button class="danger" onclick="delTime(${t.id})">Löschen</button>`:""}</div></div>`).join("")||`<div class="empty">Keine Stunden</div>`}</div></section>`;
   };
@@ -1891,7 +1793,7 @@ window.leaveHtml = function(){
   };
 
   const oldModal = modalHtml;
-  window.modalHtml = function(){
+  modalHtml = window.modalHtml = function(){
     if(!state.modal)return "";
     const {type,id}=state.modal;
     if(type==="job"){const j=jobOf(id)||{};return modal("Auftrag",`<form class="form" id="jobForm"><input type="hidden" name="id" value="${esc(j.id||"")}"><input name="title" placeholder="Titel" value="${esc(j.title||"")}"><input name="client" placeholder="Kunde" value="${esc(j.client||"")}"><input name="location" placeholder="Standort" value="${esc(j.location||"")}"><input name="address" placeholder="Adresse" value="${esc(j.address||"")}"><input name="lat" placeholder="Latitude" value="${esc(j.lat||"")}"><input name="lng" placeholder="Longitude" value="${esc(j.lng||"")}"><input name="geo_radius_m" type="number" placeholder="Radius Meter" value="${esc(j.geo_radius_m||1000)}"><label class="full"><input type="checkbox" name="require_location_tracking" ${j.require_location_tracking===false||j.require_location_tracking==="false"?"":"checked"}> GPS/Radius für diesen Einsatz aktiv</label><input type="date" name="job_date" value="${esc(jobDate(j))}"><input name="start_time" placeholder="Start" value="${esc(j.start_time||"")}"><input name="end_time" placeholder="Ende" value="${esc(j.end_time||"")}"><input type="number" name="needed_employees" placeholder="Mitarbeiter gesucht" value="${esc(j.needed_employees||1)}"><input name="status" value="${esc(j.status||"open")}"><textarea class="full" name="notes" placeholder="Hinweise">${esc(j.notes||"")}</textarea><button>Speichern</button></form>`)}
@@ -1952,7 +1854,7 @@ window.leaveHtml = function(){
     render();
   };
 
-  window.assignmentsHtml = function(){
+  assignmentsHtml = window.assignmentsHtml = function(){
     const fp=selectedPid();
     let ass=admin()?state.assignments:myAssignments();
     if(admin()&&fp)ass=ass.filter(a=>pidOf(a)===fp);
@@ -2041,7 +1943,7 @@ window.leaveHtml = function(){
   };
 
   const oldModalV111 = modalHtml;
-  window.modalHtml = function(){
+  modalHtml = window.modalHtml = function(){
     if(!state.modal)return "";
     const {type,id}=state.modal;
     if(type==="daydetail"){
@@ -2245,7 +2147,7 @@ window.leaveHtml = function(){
   }
 
   const oldRefresh = window.refreshPortal;
-  window.refreshPortal = async function(){
+  refreshPortal = window.refreshPortal = async function(){
     await loadAll();
     await sendShiftReminders();
     render();
@@ -2258,7 +2160,7 @@ window.leaveHtml = function(){
   };
 
   if(!window.sxgReminderTimer){
-    window.sxgReminderTimer=setInterval(async function(){try{await loadAll();await sendShiftReminders()}catch(e){}},10*60*1000);
+    window.sxgReminderTimer=setInterval(async()=>{try{await loadAll();await sendShiftReminders()}catch(e){}},10*60*1000);
   }
 })();
 
@@ -2315,7 +2217,7 @@ window.leaveHtml = function(){
   window.uploadJobImage = async function(jobId){
     const inp=document.createElement("input");
     inp.type="file"; inp.accept="image/*"; inp.multiple=true;
-    inp.onchange=async function(){
+    inp.onchange=async()=>{
       for(const file of inp.files){
         const path=`job-${jobId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
         const up=await sb.storage.from("job-images").upload(path,file,{upsert:false});
@@ -2366,7 +2268,7 @@ window.leaveHtml = function(){
   window.sendChatImage = async function(toPid){
     const inp=document.createElement("input");
     inp.type="file"; inp.accept="image/*";
-    inp.onchange=async function(){
+    inp.onchange=async()=>{
       const file=inp.files[0]; if(!file)return;
       const path=`chat/${myId()}-${toPid}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
       const up=await sb.storage.from("chat-images").upload(path,file,{upsert:false});
@@ -2406,7 +2308,7 @@ window.leaveHtml = function(){
     closeModal();render();
   };
 
-  window.jobsHtml = function(){
+  jobsHtml = window.jobsHtml = function(){
     const fp=state.adminEmployeeFilter||"";
     let list=state.jobs.filter(j=>canSeeJob(j)&&inDateRange(jobDateValue(j))&&(admin()||((j.status||"open")==="open"&&!jobExpired(j))));
     if(admin()&&fp){
@@ -2418,12 +2320,12 @@ window.leaveHtml = function(){
   };
 
   const oldTimesHtmlV13 = timesHtml;
-  window.timesHtml = function(all){
+  timesHtml = window.timesHtml = function(all){
     let out=oldTimesHtmlV13(all);
     return `${dateFilterBar("Stunden Datumfilter")}`+out;
   };
   const oldAssignmentsHtmlV13 = assignmentsHtml;
-  window.assignmentsHtml = function(){
+  assignmentsHtml = window.assignmentsHtml = function(){
     let out=oldAssignmentsHtmlV13();
     return `${dateFilterBar("Einsätze Datumfilter")}`+out;
   };
@@ -2444,7 +2346,7 @@ window.leaveHtml = function(){
   };
 
   const oldModalV13 = modalHtml;
-  window.modalHtml = function(){
+  modalHtml = window.modalHtml = function(){
     if(!state.modal)return "";
     const {type,id}=state.modal;
     if(type==="jobVisibility"){
@@ -2484,7 +2386,7 @@ window.leaveHtml = function(){
   window.uploadJobExcel=async function(jobId){
     const inp=document.createElement("input");
     inp.type="file";inp.accept=".xlsx,.xls";
-    inp.onchange=async function(){
+    inp.onchange=async()=>{
       const file=inp.files[0]; if(!file)return;
       const path=`job-${jobId}/template-${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
       const up=await sb.storage.from("job-excel").upload(path,file,{upsert:false});
@@ -2538,14 +2440,14 @@ window.leaveHtml = function(){
   };
 
   const oldJobsHtml=jobsHtml;
-  window.jobsHtml =function(){
+  jobsHtml=window.jobsHtml=function(){
     let out=oldJobsHtml();
     if(out.includes("jobImagesHtml(j.id)")||out.includes("Kunden-Excel:")) return out;
     return out;
   };
 
   const prevJobsHtml = jobsHtml;
-  window.jobsHtml =function(){
+  jobsHtml=window.jobsHtml=function(){
     const fp=state.adminEmployeeFilter||"";
     const dateF=state.dateFilter||{from:"",to:""};
     const inRange=d=>!d||((!dateF.from||String(d).slice(0,10)>=dateF.from)&&(!dateF.to||String(d).slice(0,10)<=dateF.to));
@@ -2560,7 +2462,7 @@ window.leaveHtml = function(){
   };
 
   const oldModal=modalHtml;
-  window.modalHtml =function(){
+  modalHtml=window.modalHtml=function(){
     if(!state.modal)return "";
     const {type,id}=state.modal;
     if(type==="profile"){
@@ -2601,336 +2503,261 @@ window.leaveHtml = function(){
 })();
 
 
-/* SXG v14.2 Vorname/Nachname */
+/* SXG v15 Stable Rebuild */
 (function(){
-  function splitName(full){
-    const parts=String(full||"").trim().split(/\s+/).filter(Boolean);
-    return {first_name:parts[0]||"",last_name:parts.slice(1).join(" ")||""};
+  function sxgPid(x){ return x && (x.profile_id || x.employee_id || x.user_id) || ""; }
+  function sxgSplitName(full){
+    var parts = String(full || "").trim().split(/\s+/).filter(Boolean);
+    return { first_name: parts[0] || "", last_name: parts.slice(1).join(" ") || "" };
   }
-  function cleanName(p){
-    const sp=splitName(p?.full_name);
+  function sxgCleanName(p){
+    var sp = sxgSplitName(p && p.full_name);
+    var first = (p && p.first_name) || sp.first_name || "";
+    var last = (p && p.last_name) || sp.last_name || "";
     return {
-      first_name:p?.first_name||sp.first_name||"",
-      last_name:p?.last_name||sp.last_name||"",
-      full_name:[p?.first_name||sp.first_name,p?.last_name||sp.last_name].filter(Boolean).join(" ")||p?.full_name||p?.email||""
+      first_name:first,
+      last_name:last,
+      full_name: [first,last].filter(Boolean).join(" ") || (p && p.full_name) || (p && p.email) || ""
     };
   }
-  const oldNameOf = window.nameOf || nameOf;
-  window.nameOf = function(id){
-    const p=state.profiles.find(x=>x.id===id);
-    return cleanName(p).full_name || oldNameOf(id);
-  };
+  function sxgName(id){
+    var p = (state.profiles || []).find(function(x){ return x.id === id; });
+    var n = sxgCleanName(p);
+    return n.full_name || id || "Mitarbeiter";
+  }
 
-  const oldModal = modalHtml;
-  window.modalHtml = function(){
-    if(!state.modal)return "";
-    const {type,id}=state.modal;
-    if(type==="profile"){
-      const p=state.profiles.find(x=>x.id===id)||{};
-      const n=cleanName(p);
-      return modal("Profil",`<form class="form" id="profileForm">
-        <input type="hidden" name="id" value="${esc(p.id||"")}">
-        <input name="first_name" placeholder="Vorname" value="${esc(n.first_name)}" ${admin()?"":"readonly"}>
-        <input name="last_name" placeholder="Nachname" value="${esc(n.last_name)}" ${admin()?"":"readonly"}>
-        <input name="phone" placeholder="Telefon" value="${esc(p.phone||"")}">
-        <input name="role" value="${esc(p.role||"employee")}" ${admin()?"":"readonly"}>
-        <input name="hourly_rate" type="number" step="0.01" placeholder="Stundenlohn" value="${esc(p.hourly_rate||0)}" ${admin()?"":"readonly"}>
-        <input name="guard_id" placeholder="Bewacher-ID" value="${esc(p.guard_id||"")}" ${admin()?"":"readonly"}>
-        <input name="epin" placeholder="E-PIN" value="${esc(p.epin||p.e_pin||"")}" ${admin()?"":"readonly"}>
-        <input name="tax_id" placeholder="Steuer-ID" value="${esc(p.tax_id||"")}" ${admin()?"":"readonly"}>
-        <input name="address" placeholder="Adresse" value="${esc(p.address||"")}">
-        <input name="emergency_contact" placeholder="Notfallkontakt" value="${esc(p.emergency_contact||"")}">
-        <input name="qualification" placeholder="Qualifikation" value="${esc(p.qualification||"")}">
-        <input name="iban" placeholder="IBAN" value="${esc(p.iban||"")}">
-        ${admin()?`<label class="full"><input type="checkbox" name="approved" ${p.approved?"checked":""}> freigegeben</label>`:""}
-        <button>Speichern</button>
-      </form>`);
+  window.sxgPid = sxgPid;
+  window.sxgName = sxgName;
+
+  async function sxgLoadExtras(){
+    async function safe2(p){
+      try{ var r = await p; return r.data || []; }catch(e){ return []; }
     }
-    return oldModal();
-  };
-
-  window.saveProfile = async function(e){
-    e.preventDefault();
-    const f=new FormData(e.target), id=f.get("id");
-    const first=String(f.get("first_name")||"").trim();
-    const last=String(f.get("last_name")||"").trim();
-    const row={
-      first_name:first,last_name:last,full_name:[first,last].filter(Boolean).join(" "),
-      phone:f.get("phone"),role:f.get("role"),hourly_rate:Number(f.get("hourly_rate")||0),
-      guard_id:f.get("guard_id"),epin:f.get("epin"),e_pin:f.get("epin"),tax_id:f.get("tax_id"),
-      address:f.get("address"),emergency_contact:f.get("emergency_contact"),
-      qualification:f.get("qualification"),iban:f.get("iban"),approved:f.get("approved")==="on"
-    };
-    const r=await sb.from("profiles").update(row).eq("id",id);
-    if(r.error)return msg(r.error.message);
-    closeModal();await loadAll();render();
-  };
-
-  const oldGenerate = window.generateJobExcel;
-  window.generateJobExcel = async function(jobId,fileId){
-    await loadAll();
-    const job=jobOf(jobId);
-    const file=state.job_excel_files.find(f=>String(f.id)===String(fileId))||state.job_excel_files.find(f=>String(f.job_id)===String(jobId));
-    if(!file)return msg("Bitte zuerst Kunden-Excel hochladen.");
-    if(file.template_name && !String(file.template_name).toLowerCase().endsWith(".xlsx"))return msg("Bitte als .xlsx hochladen.");
-    const employees=state.assignments.filter(a=>String(a.job_id)===String(jobId)).map(a=>state.profiles.find(p=>p.id===(a.profile_id||a.employee_id))).filter(Boolean).map(p=>{
-      const n=cleanName(p);
-      return {first_name:n.first_name,last_name:n.last_name,full_name:n.full_name,email:p.email||"",phone:p.phone||"",guard_id:p.guard_id||"",epin:p.epin||p.e_pin||"",tax_id:p.tax_id||"",qualification:p.qualification||""};
-    });
-    if(!employees.length)return msg("Keine Mitarbeiter im Auftrag eingetragen.");
-    const res=await fetch("/api/fill-excel",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({jobId,fileId:file.id,templatePath:file.template_path,templateName:file.template_name,employees,job:{title:job?.title,client:job?.client,location:job?.location,address:job?.address,job_date:jobDate(job),start_time:job?.start_time,end_time:job?.end_time}})});
-    let data={},raw="";try{raw=await res.text();data=JSON.parse(raw)}catch(e){data={error:raw||"Keine API-Antwort"}}
-    if(!res.ok)return msg("Excel konnte nicht erstellt werden: "+(data.error||("HTTP "+res.status)));
-    await sb.from("job_excel_files").update({generated_path:data.generatedPath,generated_name:data.generatedName,status:"generated",generated_at:new Date().toISOString()}).eq("id",file.id);
-    await loadAll();render();msg("Excel wurde erstellt.");
-  };
-})();
-
-
-/* SXG v14.3 Auto-Checkout Final */
-(function(){
-  async function runAutoCheckoutSilent(){
-    try{
-      const r = await fetch("/api/auto-checkout", {method:"POST"});
-      if(!r.ok) return;
-      const data = await r.json().catch(()=>({}));
-      if(data.updated && data.updated > 0){
-        await loadAll();
-      }
-    }catch(e){}
+    state.job_images = await safe2(sb.from("job_images").select("*").order("created_at",{ascending:false}));
+    state.job_excel_files = await safe2(sb.from("job_excel_files").select("*").order("created_at",{ascending:false}));
+    state.job_visibility = await safe2(sb.from("job_visible_profiles").select("*"));
   }
+  window.sxgLoadExtras = sxgLoadExtras;
 
-  window.runAutoCheckout = async function(){
-    try{
-      const r = await fetch("/api/auto-checkout", {method:"POST"});
-      const data = await r.json().catch(()=>({}));
-      if(!r.ok)return msg(data.error || "Auto-Checkout konnte nicht ausgeführt werden.");
-      await loadAll();
+  window.sxgOpenJobImage = async function(path){
+    var r = await sb.storage.from("job-images").createSignedUrl(path,3600);
+    if(r.error) return msg(r.error.message);
+    window.open(r.data.signedUrl,"_blank");
+  };
+  window.sxgUploadJobImage = function(jobId){
+    var inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = "image/*";
+    inp.multiple = true;
+    inp.onchange = async function(){
+      for(var i=0;i<inp.files.length;i++){
+        var file = inp.files[i];
+        var path = "job-" + jobId + "/" + Date.now() + "-" + file.name.replace(/[^a-zA-Z0-9._-]/g,"_");
+        var up = await sb.storage.from("job-images").upload(path,file,{upsert:false});
+        if(up.error){ msg(up.error.message); continue; }
+        var r = await sb.from("job_images").insert({job_id:jobId,profile_id:myId(),file_path:path,file_name:file.name});
+        if(r.error) msg(r.error.message);
+      }
+      await sxgLoadExtras();
       render();
-      msg("Auto-Checkout geprüft. Ausgestempelt: " + (data.updated||0));
-    }catch(e){
-      msg("Auto-Checkout Fehler: " + (e.message||e));
-    }
-  };
-
-  const oldRefresh = window.refreshPortal || refreshPortal;
-  window.refreshPortal = async function(){
-    await runAutoCheckoutSilent();
-    await oldRefresh();
-  };
-  setTimeout(runAutoCheckoutSilent, 1500);
-
-  if(!window.sxgAutoCheckoutTimer){
-    window.sxgAutoCheckoutTimer = setInterval(runAutoCheckoutSilent, 5*60*1000);
-  }
-
-  const oldAssignments = assignmentsHtml;
-  window.assignmentsHtml = function(){
-    setTimeout(runAutoCheckoutSilent, 500);
-    return oldAssignments();
-  };
-
-  const oldTimes = timesHtml;
-  window.timesHtml = function(all){
-    const html = oldTimes(all);
-    if(admin()){
-      return `<section class="panel"><div class="toolbar"><h3>Auto-Checkout</h3><button onclick="runAutoCheckout()">Jetzt prüfen / offene Einsätze beenden</button><small>Beendet offene Check-ins nach Auftragsende + 15 Minuten.</small></div></section>` + html;
-    }
-    return html;
-  };
-})();
-
-
-/* SXG v14.5 Restore Bilder + Excel + Namen ohne Const-Fehler */
-(function(){
-  function pidOf(x){return x?.profile_id||x?.employee_id||x?.user_id||""}
-  function splitName(full){
-    const parts=String(full||"").trim().split(/\s+/).filter(Boolean);
-    return {first_name:parts[0]||"",last_name:parts.slice(1).join(" ")||""};
-  }
-  function cleanName(p){
-    const sp=splitName(p?.full_name);
-    const first=p?.first_name||sp.first_name||"";
-    const last=p?.last_name||sp.last_name||"";
-    return {first_name:first,last_name:last,full_name:[first,last].filter(Boolean).join(" ")||p?.full_name||p?.email||""};
-  }
-  function esc2(s){return (window.esc?esc(s):String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])))}
-  function jobDateSafe(j){try{return jobDate(j)||j?.job_date||j?.start_date||""}catch(e){return j?.job_date||j?.start_date||""}}
-  function openAttendance(pid,jobId=null){
-    return state.attendance.find(a=>pidOf(a)===pid&&!a.check_out&&!a.clock_out&&(!jobId||String(a.job_id)===String(jobId)));
-  }
-
-  // Name-Anzeige global nutzbar
-  window.sxgNameOf = function(id){
-    const p=state.profiles.find(x=>x.id===id);
-    return cleanName(p).full_name || id || "—";
-  };
-
-  async function loadExtra(){
-    const safe=async p=>{try{const r=await p;return r.data||[]}catch(e){return[]}};
-    state.job_images = await safe(sb.from("job_images").select("*").order("created_at",{ascending:false}));
-    state.job_excel_files = await safe(sb.from("job_excel_files").select("*").order("created_at",{ascending:false}));
-  }
-
-  // loadAll nicht direkt überschreiben, sondern Extras nach Render/Buttons bei Bedarf laden
-  if(!window.sxgFeatureTimer){
-    window.sxgFeatureTimer=setInterval(async function(){try{await loadExtra()}catch(e){}},30000);
-  }
-
-  window.uploadJobImage=async function(jobId){
-    const inp=document.createElement("input");
-    inp.type="file"; inp.accept="image/*"; inp.multiple=true;
-    inp.onchange=async function(){
-      for(const file of inp.files){
-        const path=`job-${jobId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
-        const up=await sb.storage.from("job-images").upload(path,file,{upsert:false});
-        if(up.error){msg(up.error.message);continue}
-        const r=await sb.from("job_images").insert({job_id:jobId,profile_id:myId(),file_path:path,file_name:file.name});
-        if(r.error)msg(r.error.message);
-      }
-      await loadExtra(); location.reload();
     };
     inp.click();
   };
-  window.openJobImage=async function(path){
-    const r=await sb.storage.from("job-images").createSignedUrl(path,3600);
-    if(r.error)return msg(r.error.message);
-    window.open(r.data.signedUrl,"_blank");
-  };
-  window.delJobImage=async function(id,path){
-    if(!confirm("Bild löschen?"))return;
+  window.sxgDelJobImage = async function(id,path){
+    if(!confirm("Bild löschen?")) return;
     await sb.storage.from("job-images").remove([path]);
-    const r=await sb.from("job_images").delete().eq("id",id);
-    if(r.error)return msg(r.error.message);
-    await loadExtra(); location.reload();
+    var r = await sb.from("job_images").delete().eq("id",id);
+    if(r.error) return msg(r.error.message);
+    await sxgLoadExtras(); render();
   };
 
-  window.uploadJobExcel=async function(jobId){
-    const inp=document.createElement("input");
-    inp.type="file"; inp.accept=".xlsx";
-    inp.onchange=async function(){
-      const file=inp.files[0]; if(!file)return;
-      if(!file.name.toLowerCase().endsWith(".xlsx"))return msg("Bitte .xlsx hochladen.");
-      const path=`job-${jobId}/template-${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
-      const up=await sb.storage.from("job-excel").upload(path,file,{upsert:false});
-      if(up.error)return msg(up.error.message);
-      const r=await sb.from("job_excel_files").insert({job_id:jobId,uploaded_by:myId(),template_path:path,template_name:file.name,status:"template"});
-      if(r.error)return msg(r.error.message);
-      await loadExtra(); location.reload();
+  window.sxgOpenJobExcel = async function(path){
+    var r = await sb.storage.from("job-excel").createSignedUrl(path,3600);
+    if(r.error) return msg(r.error.message);
+    window.open(r.data.signedUrl,"_blank");
+  };
+  window.sxgUploadJobExcel = function(jobId){
+    var inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = ".xlsx";
+    inp.onchange = async function(){
+      var file = inp.files[0];
+      if(!file) return;
+      if(!file.name.toLowerCase().endsWith(".xlsx")) return msg("Bitte .xlsx hochladen.");
+      var path = "job-" + jobId + "/template-" + Date.now() + "-" + file.name.replace(/[^a-zA-Z0-9._-]/g,"_");
+      var up = await sb.storage.from("job-excel").upload(path,file,{upsert:false});
+      if(up.error) return msg(up.error.message);
+      var r = await sb.from("job_excel_files").insert({job_id:jobId,uploaded_by:myId(),template_path:path,template_name:file.name,status:"template"});
+      if(r.error) return msg(r.error.message);
+      await sxgLoadExtras(); render();
     };
     inp.click();
   };
-  window.generateJobExcel=async function(jobId,fileId){
-    await loadExtra();
-    const job=jobOf(jobId);
-    const file=(state.job_excel_files||[]).find(f=>String(f.id)===String(fileId))||(state.job_excel_files||[]).find(f=>String(f.job_id)===String(jobId));
-    if(!file)return msg("Bitte zuerst Kunden-Excel hochladen.");
-    const employees=state.assignments.filter(a=>String(a.job_id)===String(jobId)).map(a=>state.profiles.find(p=>p.id===pidOf(a))).filter(Boolean).map(p=>{
-      const n=cleanName(p);
-      return {first_name:n.first_name,last_name:n.last_name,full_name:n.full_name,email:p.email||"",phone:p.phone||"",guard_id:p.guard_id||"",epin:p.epin||p.e_pin||"",tax_id:p.tax_id||"",qualification:p.qualification||""};
+  window.sxgGenerateJobExcel = async function(jobId,fileId){
+    await loadAll();
+    await sxgLoadExtras();
+    var job = jobOf(jobId);
+    var files = state.job_excel_files || [];
+    var file = files.find(function(f){ return String(f.id) === String(fileId); }) || files.find(function(f){ return String(f.job_id) === String(jobId); });
+    if(!file) return msg("Bitte zuerst Kunden-Excel hochladen.");
+    var employees = (state.assignments||[])
+      .filter(function(a){ return String(a.job_id) === String(jobId); })
+      .map(function(a){ return (state.profiles||[]).find(function(p){ return p.id === sxgPid(a); }); })
+      .filter(Boolean)
+      .map(function(p){
+        var n = sxgCleanName(p);
+        return {
+          first_name:n.first_name,
+          last_name:n.last_name,
+          full_name:n.full_name,
+          email:p.email||"",
+          phone:p.phone||"",
+          guard_id:p.guard_id||"",
+          epin:p.epin||p.e_pin||"",
+          tax_id:p.tax_id||"",
+          qualification:p.qualification||""
+        };
+      });
+    if(!employees.length) return msg("Keine Mitarbeiter im Auftrag eingetragen.");
+    var res = await fetch("/api/fill-excel",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        jobId:jobId,
+        fileId:file.id,
+        templatePath:file.template_path,
+        templateName:file.template_name,
+        employees:employees,
+        job:{title:job && job.title,client:job && job.client,location:job && job.location,address:job && job.address,job_date:jobDate(job),start_time:job && job.start_time,end_time:job && job.end_time}
+      })
     });
-    if(!employees.length)return msg("Keine Mitarbeiter im Auftrag eingetragen.");
-    const res=await fetch("/api/fill-excel",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({jobId,fileId:file.id,templatePath:file.template_path,templateName:file.template_name,employees,job:{title:job?.title,client:job?.client,location:job?.location,address:job?.address,job_date:jobDateSafe(job),start_time:job?.start_time,end_time:job?.end_time}})});
-    let data={},raw="";
-    try{raw=await res.text();data=JSON.parse(raw)}catch(e){data={error:raw||"Keine API-Antwort"}}
-    if(!res.ok)return msg("Excel konnte nicht erstellt werden: "+(data.error||("HTTP "+res.status)));
+    var raw = "", data = {};
+    try{ raw = await res.text(); data = JSON.parse(raw); }catch(e){ data = {error:raw || "Keine API-Antwort"}; }
+    if(!res.ok) return msg("Excel konnte nicht erstellt werden: " + (data.error || ("HTTP " + res.status)));
     await sb.from("job_excel_files").update({generated_path:data.generatedPath,generated_name:data.generatedName,status:"generated",generated_at:new Date().toISOString()}).eq("id",file.id);
-    await loadExtra(); location.reload();
+    await sxgLoadExtras(); render(); msg("Excel wurde erstellt.");
   };
-  window.openJobExcel=async function(path){
-    const r=await sb.storage.from("job-excel").createSignedUrl(path,3600);
-    if(r.error)return msg(r.error.message);
+  window.sxgDelJobExcel = async function(id){
+    var f = (state.job_excel_files||[]).find(function(x){ return String(x.id) === String(id); });
+    if(!f || !confirm("Excel-Datei löschen?")) return;
+    var paths = [f.template_path,f.generated_path].filter(Boolean);
+    if(paths.length) await sb.storage.from("job-excel").remove(paths);
+    var r = await sb.from("job_excel_files").delete().eq("id",id);
+    if(r.error) return msg(r.error.message);
+    await sxgLoadExtras(); render();
+  };
+
+  function sxgJobMediaHtml(jobId){
+    var imgs = (state.job_images||[]).filter(function(i){ return String(i.job_id) === String(jobId); });
+    var excels = (state.job_excel_files||[]).filter(function(f){ return String(f.job_id) === String(jobId); });
+    var imgHtml = imgs.map(function(i){
+      var path = String(i.file_path).replace(/'/g,"\\'");
+      return "<button class='secondary' onclick=\"sxgOpenJobImage('"+path+"')\">📷 "+esc(i.file_name||"Bild")+"</button>" + (admin() ? " <button class='danger' onclick=\"sxgDelJobImage("+i.id+",'"+path+"')\">x</button>" : "");
+    }).join(" ") || "<small>Keine Bilder</small>";
+    var excelHtml = "";
+    if(admin()){
+      excelHtml = "<br><br><b>Kunden-Excel:</b><br>" + (excels.map(function(f){
+        var t = String(f.template_path).replace(/'/g,"\\'");
+        var g = String(f.generated_path||"").replace(/'/g,"\\'");
+        return "<div style='margin:6px 0'><button class='secondary' onclick=\"sxgOpenJobExcel('"+t+"')\">Vorlage: "+esc(f.template_name||"Excel")+"</button> <button onclick='sxgGenerateJobExcel("+jobId+","+f.id+")'>Generieren</button> " + (f.generated_path ? "<button class='ok' onclick=\"sxgOpenJobExcel('"+g+"')\">Fertige Excel herunterladen</button>" : "") + " <button class='danger' onclick='sxgDelJobExcel("+f.id+")'>Löschen</button></div>";
+      }).join("") || "<small>Keine Excel hinterlegt</small>") + " <button onclick='sxgUploadJobExcel("+jobId+")'>+ Kunden-Excel hochladen</button>";
+    }
+    return "<div class='sxg-media' style='margin-top:10px;border-top:1px solid #eee;padding-top:8px'><b>Bilder:</b><br>" + imgHtml + " <button onclick='sxgUploadJobImage("+jobId+")'>+ Bild</button>" + excelHtml + "</div>";
+  }
+  window.sxgJobMediaHtml = sxgJobMediaHtml;
+
+  window.sxgEnhanceJobs = async function(){
+    await sxgLoadExtras();
+    document.querySelectorAll(".row").forEach(function(row){
+      if(row.querySelector(".sxg-media")) return;
+      var buttons = Array.prototype.slice.call(row.querySelectorAll("button"));
+      var jobId = null;
+      buttons.some(function(b){
+        var s = b.getAttribute("onclick") || "";
+        var m = s.match(/openModal\('job',(\d+)\)/) || s.match(/assignJob\((\d+)\)/) || s.match(/checkIn\((\d+)\)/) || s.match(/openModal\('assign',(\d+)\)/);
+        if(m){ jobId = m[1]; return true; }
+        return false;
+      });
+      if(!jobId) return;
+      var firstDiv = row.querySelector("div");
+      if(firstDiv) firstDiv.insertAdjacentHTML("beforeend", sxgJobMediaHtml(jobId));
+    });
+  };
+
+  window.sxgOpenChatImage = async function(path){
+    var r = await sb.storage.from("chat-images").createSignedUrl(path,3600);
+    if(r.error) return msg(r.error.message);
     window.open(r.data.signedUrl,"_blank");
   };
-  window.delJobExcel=async function(id){
-    const f=(state.job_excel_files||[]).find(x=>String(x.id)===String(id));
-    if(!f||!confirm("Excel-Datei löschen?"))return;
-    const paths=[f.template_path,f.generated_path].filter(Boolean);
-    if(paths.length)await sb.storage.from("job-excel").remove(paths);
-    const r=await sb.from("job_excel_files").delete().eq("id",id);
-    if(r.error)return msg(r.error.message);
-    await loadExtra(); location.reload();
+  window.sxgSendChatImage = function(toPid){
+    var inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = "image/*";
+    inp.onchange = async function(){
+      var file = inp.files[0];
+      if(!file) return;
+      var path = "chat/" + myId() + "-" + toPid + "/" + Date.now() + "-" + file.name.replace(/[^a-zA-Z0-9._-]/g,"_");
+      var up = await sb.storage.from("chat-images").upload(path,file,{upsert:false});
+      if(up.error) return msg(up.error.message);
+      var r = await sb.from("chat_messages").insert({from_profile_id:myId(),to_profile_id:toPid,body:"[Bild]",image_path:path,image_name:file.name});
+      if(r.error) return msg(r.error.message);
+      await loadAll(); render();
+    };
+    inp.click();
   };
 
-  function buildMedia(jobId){
-    const imgs=(state.job_images||[]).filter(i=>String(i.job_id)===String(jobId));
-    const excels=(state.job_excel_files||[]).filter(f=>String(f.job_id)===String(jobId));
-    return `<div class="sxg-media" style="margin-top:10px;border-top:1px solid #eee;padding-top:8px">
-      <b>Bilder:</b><br>
-      ${imgs.map(i=>`<button class="secondary" onclick="openJobImage('${String(i.file_path).replace(/'/g,"\\'")}')">📷 ${esc2(i.file_name||"Bild")}</button>${admin()?` <button class="danger" onclick="delJobImage(${i.id},'${String(i.file_path).replace(/'/g,"\\'")}')">x</button>`:""}`).join(" ")||"<small>Keine Bilder</small>"}
-      <button onclick="uploadJobImage(${jobId})">+ Bild</button>
-      ${admin()?`<br><br><b>Kunden-Excel:</b><br>
-        ${excels.map(f=>`<div style="margin:6px 0"><button class="secondary" onclick="openJobExcel('${String(f.template_path).replace(/'/g,"\\'")}')">Vorlage: ${esc2(f.template_name||"Excel")}</button> <button onclick="generateJobExcel(${jobId},${f.id})">Generieren</button> ${f.generated_path?`<button class="ok" onclick="openJobExcel('${String(f.generated_path).replace(/'/g,"\\'")}')">Fertige Excel herunterladen</button>`:""} <button class="danger" onclick="delJobExcel(${f.id})">Löschen</button></div>`).join("")||"<small>Keine Excel hinterlegt</small>"}
-        <button onclick="uploadJobExcel(${jobId})">+ Kunden-Excel hochladen</button>`:""}
-    </div>`;
-  }
-
-  async function enhanceJobs(){
-    await loadExtra();
-    document.querySelectorAll(".row").forEach(row=>{
-      if(row.querySelector(".sxg-media"))return;
-      const buttons=[...row.querySelectorAll("button")];
-      let jobId=null;
-      for(const b of buttons){
-        const s=b.getAttribute("onclick")||"";
-        let m=s.match(/openModal\('job',(\d+)\)/)||s.match(/assignJob\((\d+)\)/)||s.match(/checkIn\((\d+)\)/);
-        if(m){jobId=m[1];break}
-      }
-      if(!jobId)return;
-      const first=row.querySelector("div");
-      if(first)first.insertAdjacentHTML("beforeend",buildMedia(jobId));
-    });
-  }
-
-  // Profil-Modal nachträglich ersetzen, wenn geöffnet
-  const oldOpenModal=window.openModal||openModal;
-  window.openModal=function(type,id){
-    oldOpenModal(type,id);
-    setTimeout(()=>{
-      if(type==="profile"){
-        const p=state.profiles.find(x=>x.id===id)||{};
-        const n=cleanName(p);
-        const modalBox=document.querySelector("#modal form#profileForm");
-        if(modalBox){
-          modalBox.innerHTML=`<input type="hidden" name="id" value="${esc2(p.id||"")}">
-            <input name="first_name" placeholder="Vorname" value="${esc2(n.first_name)}" ${admin()?"":"readonly"}>
-            <input name="last_name" placeholder="Nachname" value="${esc2(n.last_name)}" ${admin()?"":"readonly"}>
-            <input name="phone" placeholder="Telefon" value="${esc2(p.phone||"")}">
-            <input name="role" value="${esc2(p.role||"employee")}" ${admin()?"":"readonly"}>
-            <input name="hourly_rate" type="number" step="0.01" placeholder="Stundenlohn" value="${esc2(p.hourly_rate||0)}" ${admin()?"":"readonly"}>
-            <input name="guard_id" placeholder="Bewacher-ID" value="${esc2(p.guard_id||"")}" ${admin()?"":"readonly"}>
-            <input name="epin" placeholder="E-PIN" value="${esc2(p.epin||p.e_pin||"")}" ${admin()?"":"readonly"}>
-            <input name="tax_id" placeholder="Steuer-ID" value="${esc2(p.tax_id||"")}" ${admin()?"":"readonly"}>
-            <input name="address" placeholder="Adresse" value="${esc2(p.address||"")}">
-            <input name="emergency_contact" placeholder="Notfallkontakt" value="${esc2(p.emergency_contact||"")}">
-            <input name="qualification" placeholder="Qualifikation" value="${esc2(p.qualification||"")}">
-            <input name="iban" placeholder="IBAN" value="${esc2(p.iban||"")}">
-            ${admin()?`<label class="full"><input type="checkbox" name="approved" ${p.approved?"checked":""}> freigegeben</label>`:""}
-            <button>Speichern</button>`;
-          modalBox.onsubmit=window.saveProfile;
+  window.sxgEnhanceChat = function(){
+    var panelHeaders = Array.prototype.slice.call(document.querySelectorAll("section.panel h2"));
+    var chatHeader = panelHeaders.find(function(h){ return h.textContent.trim() === "Chat"; });
+    if(!chatHeader) return;
+    var panel = chatHeader.closest("section.panel");
+    if(!panel || panel.querySelector(".sxg-chat-image-box")) return;
+    var people = (state.profiles||[]).filter(function(p){ return p.id !== myId(); });
+    var html = "<div class='toolbar sxg-chat-image-box'><select id='sxgChatImageTo'>" + people.map(function(p){ return "<option value='"+p.id+"'>"+esc(sxgName(p.id))+"</option>"; }).join("") + "</select><button onclick=\"sxgSendChatImage(document.getElementById('sxgChatImageTo').value)\">+ Bild senden</button></div>";
+    chatHeader.insertAdjacentHTML("afterend", html);
+    panel.querySelectorAll(".row").forEach(function(row){
+      if(row.innerHTML.indexOf("[Bild]")>=0){
+        var msg = (state.chats||[]).find(function(c){ return c.image_path && row.textContent.indexOf(sxgName(c.from_profile_id))>=0; });
+        if(msg){
+          row.querySelector("div").innerHTML += "<br><button class='secondary' onclick=\"sxgOpenChatImage('"+String(msg.image_path).replace(/'/g,"\\'")+"')\">📷 "+esc(msg.image_name||"Bild öffnen")+"</button>";
         }
       }
-    },50);
+    });
   };
 
-  window.saveProfile=async function(e){
-    e.preventDefault();
-    const f=new FormData(e.target), id=f.get("id");
-    const first=String(f.get("first_name")||"").trim();
-    const last=String(f.get("last_name")||"").trim();
-    const row={first_name:first,last_name:last,full_name:[first,last].filter(Boolean).join(" "),phone:f.get("phone"),role:f.get("role"),hourly_rate:Number(f.get("hourly_rate")||0),guard_id:f.get("guard_id"),epin:f.get("epin"),e_pin:f.get("epin"),tax_id:f.get("tax_id"),address:f.get("address"),emergency_contact:f.get("emergency_contact"),qualification:f.get("qualification"),iban:f.get("iban"),approved:f.get("approved")==="on"};
-    const r=await sb.from("profiles").update(row).eq("id",id);
-    if(r.error)return msg(r.error.message);
-    closeModal();await loadAll();render();
+  window.sxgPatchProfileModal = function(){
+    var form = document.getElementById("profileForm");
+    if(!form || form.querySelector("[name='first_name']")) return;
+    var idInput = form.querySelector("[name='id']");
+    var id = idInput && idInput.value;
+    var p = (state.profiles||[]).find(function(x){ return x.id === id; }) || state.profile || {};
+    var n = sxgCleanName(p);
+    var full = form.querySelector("[name='full_name']");
+    if(full){
+      full.insertAdjacentHTML("beforebegin","<input name='first_name' placeholder='Vorname' value='"+esc(n.first_name)+"' "+(admin()?"":"readonly")+"><input name='last_name' placeholder='Nachname' value='"+esc(n.last_name)+"' "+(admin()?"":"readonly")+">");
+      full.type = "hidden";
+      full.value = n.full_name;
+    }
+    if(!form.querySelector("[name='epin']")){
+      var guard = form.querySelector("[name='guard_id']");
+      if(guard) guard.insertAdjacentHTML("afterend","<input name='epin' placeholder='E-PIN' value='"+esc(p.epin||p.e_pin||"")+"' "+(admin()?"":"readonly")+">");
+    }
   };
 
-  const oldRender=window.render||render;
-  window.render=function(){
-    const out=oldRender();
-    setTimeout(enhanceJobs,400);
+  var oldOpenModal = window.openModal;
+  window.openModal = function(type,id){
+    oldOpenModal(type,id);
+    setTimeout(function(){ if(type==="profile") sxgPatchProfileModal(); },80);
+  };
+
+  var oldRender = window.render;
+  window.render = function(){
+    var out = oldRender();
+    setTimeout(function(){ sxgEnhanceJobs(); sxgEnhanceChat(); },300);
     return out;
   };
-  setTimeout(enhanceJobs,1000);
+
+  setTimeout(function(){ sxgEnhanceJobs(); sxgEnhanceChat(); },1200);
 })();
 
 init();
