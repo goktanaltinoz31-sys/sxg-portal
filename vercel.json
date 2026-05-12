@@ -1,4 +1,10 @@
 {
   "buildCommand": "echo build-ok",
-  "outputDirectory": "."
+  "outputDirectory": ".",
+  "crons": [
+    {
+      "path": "/api/auto-checkout",
+      "schedule": "*/10 * * * *"
+    }
+  ]
 }

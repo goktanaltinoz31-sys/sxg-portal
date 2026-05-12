@@ -2502,6 +2502,151 @@ window.leaveHtml = function(){
   };
 })();
 
+
+/* SXG v14.2 Vorname/Nachname */
+(function(){
+  function splitName(full){
+    const parts=String(full||"").trim().split(/\s+/).filter(Boolean);
+    return {first_name:parts[0]||"",last_name:parts.slice(1).join(" ")||""};
+  }
+  function cleanName(p){
+    const sp=splitName(p?.full_name);
+    return {
+      first_name:p?.first_name||sp.first_name||"",
+      last_name:p?.last_name||sp.last_name||"",
+      full_name:[p?.first_name||sp.first_name,p?.last_name||sp.last_name].filter(Boolean).join(" ")||p?.full_name||p?.email||""
+    };
+  }
+  const oldNameOf = window.nameOf || nameOf;
+  nameOf = window.nameOf = function(id){
+    const p=state.profiles.find(x=>x.id===id);
+    return cleanName(p).full_name || oldNameOf(id);
+  };
+
+  const oldModal = modalHtml;
+  modalHtml = window.modalHtml = function(){
+    if(!state.modal)return "";
+    const {type,id}=state.modal;
+    if(type==="profile"){
+      const p=state.profiles.find(x=>x.id===id)||{};
+      const n=cleanName(p);
+      return modal("Profil",`<form class="form" id="profileForm">
+        <input type="hidden" name="id" value="${esc(p.id||"")}">
+        <input name="first_name" placeholder="Vorname" value="${esc(n.first_name)}" ${admin()?"":"readonly"}>
+        <input name="last_name" placeholder="Nachname" value="${esc(n.last_name)}" ${admin()?"":"readonly"}>
+        <input name="phone" placeholder="Telefon" value="${esc(p.phone||"")}">
+        <input name="role" value="${esc(p.role||"employee")}" ${admin()?"":"readonly"}>
+        <input name="hourly_rate" type="number" step="0.01" placeholder="Stundenlohn" value="${esc(p.hourly_rate||0)}" ${admin()?"":"readonly"}>
+        <input name="guard_id" placeholder="Bewacher-ID" value="${esc(p.guard_id||"")}" ${admin()?"":"readonly"}>
+        <input name="epin" placeholder="E-PIN" value="${esc(p.epin||p.e_pin||"")}" ${admin()?"":"readonly"}>
+        <input name="tax_id" placeholder="Steuer-ID" value="${esc(p.tax_id||"")}" ${admin()?"":"readonly"}>
+        <input name="address" placeholder="Adresse" value="${esc(p.address||"")}">
+        <input name="emergency_contact" placeholder="Notfallkontakt" value="${esc(p.emergency_contact||"")}">
+        <input name="qualification" placeholder="Qualifikation" value="${esc(p.qualification||"")}">
+        <input name="iban" placeholder="IBAN" value="${esc(p.iban||"")}">
+        ${admin()?`<label class="full"><input type="checkbox" name="approved" ${p.approved?"checked":""}> freigegeben</label>`:""}
+        <button>Speichern</button>
+      </form>`);
+    }
+    return oldModal();
+  };
+
+  saveProfile = window.saveProfile = async function(e){
+    e.preventDefault();
+    const f=new FormData(e.target), id=f.get("id");
+    const first=String(f.get("first_name")||"").trim();
+    const last=String(f.get("last_name")||"").trim();
+    const row={
+      first_name:first,last_name:last,full_name:[first,last].filter(Boolean).join(" "),
+      phone:f.get("phone"),role:f.get("role"),hourly_rate:Number(f.get("hourly_rate")||0),
+      guard_id:f.get("guard_id"),epin:f.get("epin"),e_pin:f.get("epin"),tax_id:f.get("tax_id"),
+      address:f.get("address"),emergency_contact:f.get("emergency_contact"),
+      qualification:f.get("qualification"),iban:f.get("iban"),approved:f.get("approved")==="on"
+    };
+    const r=await sb.from("profiles").update(row).eq("id",id);
+    if(r.error)return msg(r.error.message);
+    closeModal();await loadAll();render();
+  };
+
+  const oldGenerate = window.generateJobExcel;
+  window.generateJobExcel = async function(jobId,fileId){
+    await loadAll();
+    const job=jobOf(jobId);
+    const file=state.job_excel_files.find(f=>String(f.id)===String(fileId))||state.job_excel_files.find(f=>String(f.job_id)===String(jobId));
+    if(!file)return msg("Bitte zuerst Kunden-Excel hochladen.");
+    if(file.template_name && !String(file.template_name).toLowerCase().endsWith(".xlsx"))return msg("Bitte als .xlsx hochladen.");
+    const employees=state.assignments.filter(a=>String(a.job_id)===String(jobId)).map(a=>state.profiles.find(p=>p.id===(a.profile_id||a.employee_id))).filter(Boolean).map(p=>{
+      const n=cleanName(p);
+      return {first_name:n.first_name,last_name:n.last_name,full_name:n.full_name,email:p.email||"",phone:p.phone||"",guard_id:p.guard_id||"",epin:p.epin||p.e_pin||"",tax_id:p.tax_id||"",qualification:p.qualification||""};
+    });
+    if(!employees.length)return msg("Keine Mitarbeiter im Auftrag eingetragen.");
+    const res=await fetch("/api/fill-excel",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({jobId,fileId:file.id,templatePath:file.template_path,templateName:file.template_name,employees,job:{title:job?.title,client:job?.client,location:job?.location,address:job?.address,job_date:jobDate(job),start_time:job?.start_time,end_time:job?.end_time}})});
+    let data={},raw="";try{raw=await res.text();data=JSON.parse(raw)}catch(e){data={error:raw||"Keine API-Antwort"}}
+    if(!res.ok)return msg("Excel konnte nicht erstellt werden: "+(data.error||("HTTP "+res.status)));
+    await sb.from("job_excel_files").update({generated_path:data.generatedPath,generated_name:data.generatedName,status:"generated",generated_at:new Date().toISOString()}).eq("id",file.id);
+    await loadAll();render();msg("Excel wurde erstellt.");
+  };
+})();
+
+
+/* SXG v14.3 Auto-Checkout Final */
+(function(){
+  async function runAutoCheckoutSilent(){
+    try{
+      const r = await fetch("/api/auto-checkout", {method:"POST"});
+      if(!r.ok) return;
+      const data = await r.json().catch(()=>({}));
+      if(data.updated && data.updated > 0){
+        await loadAll();
+      }
+    }catch(e){}
+  }
+
+  window.runAutoCheckout = async function(){
+    try{
+      const r = await fetch("/api/auto-checkout", {method:"POST"});
+      const data = await r.json().catch(()=>({}));
+      if(!r.ok)return msg(data.error || "Auto-Checkout konnte nicht ausgeführt werden.");
+      await loadAll();
+      render();
+      msg("Auto-Checkout geprüft. Ausgestempelt: " + (data.updated||0));
+    }catch(e){
+      msg("Auto-Checkout Fehler: " + (e.message||e));
+    }
+  };
+
+  const oldRefresh = window.refreshPortal || refreshPortal;
+  refreshPortal = window.refreshPortal = async function(){
+    await runAutoCheckoutSilent();
+    await oldRefresh();
+  };
+
+  const oldInitAuto = init;
+  init = window.init = async function(){
+    await oldInitAuto();
+    setTimeout(runAutoCheckoutSilent, 1500);
+  };
+
+  if(!window.sxgAutoCheckoutTimer){
+    window.sxgAutoCheckoutTimer = setInterval(runAutoCheckoutSilent, 5*60*1000);
+  }
+
+  const oldAssignments = assignmentsHtml;
+  assignmentsHtml = window.assignmentsHtml = function(){
+    setTimeout(runAutoCheckoutSilent, 500);
+    return oldAssignments();
+  };
+
+  const oldTimes = timesHtml;
+  timesHtml = window.timesHtml = function(all){
+    const html = oldTimes(all);
+    if(admin()){
+      return `<section class="panel"><div class="toolbar"><h3>Auto-Checkout</h3><button onclick="runAutoCheckout()">Jetzt prüfen / offene Einsätze beenden</button><small>Beendet offene Check-ins nach Auftragsende + 15 Minuten.</small></div></section>` + html;
+    }
+    return html;
+  };
+})();
+
 init();
 }catch(e){document.getElementById("root").innerHTML='<div class="error"><b>Startfehler:</b>\\n'+String(e.message)+'</div>'}
 </script>
