@@ -2642,6 +2642,199 @@ window.leaveHtml = function(){
   };
 })();
 
+
+/* SXG v14.5 Restore Bilder + Excel + Namen ohne Const-Fehler */
+(function(){
+  function pidOf(x){return x?.profile_id||x?.employee_id||x?.user_id||""}
+  function splitName(full){
+    const parts=String(full||"").trim().split(/\s+/).filter(Boolean);
+    return {first_name:parts[0]||"",last_name:parts.slice(1).join(" ")||""};
+  }
+  function cleanName(p){
+    const sp=splitName(p?.full_name);
+    const first=p?.first_name||sp.first_name||"";
+    const last=p?.last_name||sp.last_name||"";
+    return {first_name:first,last_name:last,full_name:[first,last].filter(Boolean).join(" ")||p?.full_name||p?.email||""};
+  }
+  function esc2(s){return (window.esc?esc(s):String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])))}
+  function jobDateSafe(j){try{return jobDate(j)||j?.job_date||j?.start_date||""}catch(e){return j?.job_date||j?.start_date||""}}
+  function openAttendance(pid,jobId=null){
+    return state.attendance.find(a=>pidOf(a)===pid&&!a.check_out&&!a.clock_out&&(!jobId||String(a.job_id)===String(jobId)));
+  }
+
+  // Name-Anzeige global nutzbar
+  window.sxgNameOf = function(id){
+    const p=state.profiles.find(x=>x.id===id);
+    return cleanName(p).full_name || id || "—";
+  };
+
+  async function loadExtra(){
+    const safe=async p=>{try{const r=await p;return r.data||[]}catch(e){return[]}};
+    state.job_images = await safe(sb.from("job_images").select("*").order("created_at",{ascending:false}));
+    state.job_excel_files = await safe(sb.from("job_excel_files").select("*").order("created_at",{ascending:false}));
+  }
+
+  // loadAll nicht direkt überschreiben, sondern Extras nach Render/Buttons bei Bedarf laden
+  if(!window.sxgFeatureTimer){
+    window.sxgFeatureTimer=setInterval(async()=>{try{await loadExtra()}catch(e){}},30000);
+  }
+
+  window.uploadJobImage=async function(jobId){
+    const inp=document.createElement("input");
+    inp.type="file"; inp.accept="image/*"; inp.multiple=true;
+    inp.onchange=async()=>{
+      for(const file of inp.files){
+        const path=`job-${jobId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
+        const up=await sb.storage.from("job-images").upload(path,file,{upsert:false});
+        if(up.error){msg(up.error.message);continue}
+        const r=await sb.from("job_images").insert({job_id:jobId,profile_id:myId(),file_path:path,file_name:file.name});
+        if(r.error)msg(r.error.message);
+      }
+      await loadExtra(); location.reload();
+    };
+    inp.click();
+  };
+  window.openJobImage=async function(path){
+    const r=await sb.storage.from("job-images").createSignedUrl(path,3600);
+    if(r.error)return msg(r.error.message);
+    window.open(r.data.signedUrl,"_blank");
+  };
+  window.delJobImage=async function(id,path){
+    if(!confirm("Bild löschen?"))return;
+    await sb.storage.from("job-images").remove([path]);
+    const r=await sb.from("job_images").delete().eq("id",id);
+    if(r.error)return msg(r.error.message);
+    await loadExtra(); location.reload();
+  };
+
+  window.uploadJobExcel=async function(jobId){
+    const inp=document.createElement("input");
+    inp.type="file"; inp.accept=".xlsx";
+    inp.onchange=async()=>{
+      const file=inp.files[0]; if(!file)return;
+      if(!file.name.toLowerCase().endsWith(".xlsx"))return msg("Bitte .xlsx hochladen.");
+      const path=`job-${jobId}/template-${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
+      const up=await sb.storage.from("job-excel").upload(path,file,{upsert:false});
+      if(up.error)return msg(up.error.message);
+      const r=await sb.from("job_excel_files").insert({job_id:jobId,uploaded_by:myId(),template_path:path,template_name:file.name,status:"template"});
+      if(r.error)return msg(r.error.message);
+      await loadExtra(); location.reload();
+    };
+    inp.click();
+  };
+  window.generateJobExcel=async function(jobId,fileId){
+    await loadExtra();
+    const job=jobOf(jobId);
+    const file=(state.job_excel_files||[]).find(f=>String(f.id)===String(fileId))||(state.job_excel_files||[]).find(f=>String(f.job_id)===String(jobId));
+    if(!file)return msg("Bitte zuerst Kunden-Excel hochladen.");
+    const employees=state.assignments.filter(a=>String(a.job_id)===String(jobId)).map(a=>state.profiles.find(p=>p.id===pidOf(a))).filter(Boolean).map(p=>{
+      const n=cleanName(p);
+      return {first_name:n.first_name,last_name:n.last_name,full_name:n.full_name,email:p.email||"",phone:p.phone||"",guard_id:p.guard_id||"",epin:p.epin||p.e_pin||"",tax_id:p.tax_id||"",qualification:p.qualification||""};
+    });
+    if(!employees.length)return msg("Keine Mitarbeiter im Auftrag eingetragen.");
+    const res=await fetch("/api/fill-excel",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({jobId,fileId:file.id,templatePath:file.template_path,templateName:file.template_name,employees,job:{title:job?.title,client:job?.client,location:job?.location,address:job?.address,job_date:jobDateSafe(job),start_time:job?.start_time,end_time:job?.end_time}})});
+    let data={},raw="";
+    try{raw=await res.text();data=JSON.parse(raw)}catch(e){data={error:raw||"Keine API-Antwort"}}
+    if(!res.ok)return msg("Excel konnte nicht erstellt werden: "+(data.error||("HTTP "+res.status)));
+    await sb.from("job_excel_files").update({generated_path:data.generatedPath,generated_name:data.generatedName,status:"generated",generated_at:new Date().toISOString()}).eq("id",file.id);
+    await loadExtra(); location.reload();
+  };
+  window.openJobExcel=async function(path){
+    const r=await sb.storage.from("job-excel").createSignedUrl(path,3600);
+    if(r.error)return msg(r.error.message);
+    window.open(r.data.signedUrl,"_blank");
+  };
+  window.delJobExcel=async function(id){
+    const f=(state.job_excel_files||[]).find(x=>String(x.id)===String(id));
+    if(!f||!confirm("Excel-Datei löschen?"))return;
+    const paths=[f.template_path,f.generated_path].filter(Boolean);
+    if(paths.length)await sb.storage.from("job-excel").remove(paths);
+    const r=await sb.from("job_excel_files").delete().eq("id",id);
+    if(r.error)return msg(r.error.message);
+    await loadExtra(); location.reload();
+  };
+
+  function buildMedia(jobId){
+    const imgs=(state.job_images||[]).filter(i=>String(i.job_id)===String(jobId));
+    const excels=(state.job_excel_files||[]).filter(f=>String(f.job_id)===String(jobId));
+    return `<div class="sxg-media" style="margin-top:10px;border-top:1px solid #eee;padding-top:8px">
+      <b>Bilder:</b><br>
+      ${imgs.map(i=>`<button class="secondary" onclick="openJobImage('${String(i.file_path).replace(/'/g,"\\'")}')">📷 ${esc2(i.file_name||"Bild")}</button>${admin()?` <button class="danger" onclick="delJobImage(${i.id},'${String(i.file_path).replace(/'/g,"\\'")}')">x</button>`:""}`).join(" ")||"<small>Keine Bilder</small>"}
+      <button onclick="uploadJobImage(${jobId})">+ Bild</button>
+      ${admin()?`<br><br><b>Kunden-Excel:</b><br>
+        ${excels.map(f=>`<div style="margin:6px 0"><button class="secondary" onclick="openJobExcel('${String(f.template_path).replace(/'/g,"\\'")}')">Vorlage: ${esc2(f.template_name||"Excel")}</button> <button onclick="generateJobExcel(${jobId},${f.id})">Generieren</button> ${f.generated_path?`<button class="ok" onclick="openJobExcel('${String(f.generated_path).replace(/'/g,"\\'")}')">Fertige Excel herunterladen</button>`:""} <button class="danger" onclick="delJobExcel(${f.id})">Löschen</button></div>`).join("")||"<small>Keine Excel hinterlegt</small>"}
+        <button onclick="uploadJobExcel(${jobId})">+ Kunden-Excel hochladen</button>`:""}
+    </div>`;
+  }
+
+  async function enhanceJobs(){
+    await loadExtra();
+    document.querySelectorAll(".row").forEach(row=>{
+      if(row.querySelector(".sxg-media"))return;
+      const buttons=[...row.querySelectorAll("button")];
+      let jobId=null;
+      for(const b of buttons){
+        const s=b.getAttribute("onclick")||"";
+        let m=s.match(/openModal\('job',(\d+)\)/)||s.match(/assignJob\((\d+)\)/)||s.match(/checkIn\((\d+)\)/);
+        if(m){jobId=m[1];break}
+      }
+      if(!jobId)return;
+      const first=row.querySelector("div");
+      if(first)first.insertAdjacentHTML("beforeend",buildMedia(jobId));
+    });
+  }
+
+  // Profil-Modal nachträglich ersetzen, wenn geöffnet
+  const oldOpenModal=window.openModal||openModal;
+  window.openModal=function(type,id){
+    oldOpenModal(type,id);
+    setTimeout(()=>{
+      if(type==="profile"){
+        const p=state.profiles.find(x=>x.id===id)||{};
+        const n=cleanName(p);
+        const modalBox=document.querySelector("#modal form#profileForm");
+        if(modalBox){
+          modalBox.innerHTML=`<input type="hidden" name="id" value="${esc2(p.id||"")}">
+            <input name="first_name" placeholder="Vorname" value="${esc2(n.first_name)}" ${admin()?"":"readonly"}>
+            <input name="last_name" placeholder="Nachname" value="${esc2(n.last_name)}" ${admin()?"":"readonly"}>
+            <input name="phone" placeholder="Telefon" value="${esc2(p.phone||"")}">
+            <input name="role" value="${esc2(p.role||"employee")}" ${admin()?"":"readonly"}>
+            <input name="hourly_rate" type="number" step="0.01" placeholder="Stundenlohn" value="${esc2(p.hourly_rate||0)}" ${admin()?"":"readonly"}>
+            <input name="guard_id" placeholder="Bewacher-ID" value="${esc2(p.guard_id||"")}" ${admin()?"":"readonly"}>
+            <input name="epin" placeholder="E-PIN" value="${esc2(p.epin||p.e_pin||"")}" ${admin()?"":"readonly"}>
+            <input name="tax_id" placeholder="Steuer-ID" value="${esc2(p.tax_id||"")}" ${admin()?"":"readonly"}>
+            <input name="address" placeholder="Adresse" value="${esc2(p.address||"")}">
+            <input name="emergency_contact" placeholder="Notfallkontakt" value="${esc2(p.emergency_contact||"")}">
+            <input name="qualification" placeholder="Qualifikation" value="${esc2(p.qualification||"")}">
+            <input name="iban" placeholder="IBAN" value="${esc2(p.iban||"")}">
+            ${admin()?`<label class="full"><input type="checkbox" name="approved" ${p.approved?"checked":""}> freigegeben</label>`:""}
+            <button>Speichern</button>`;
+          modalBox.onsubmit=window.saveProfile;
+        }
+      }
+    },50);
+  };
+
+  window.saveProfile=async function(e){
+    e.preventDefault();
+    const f=new FormData(e.target), id=f.get("id");
+    const first=String(f.get("first_name")||"").trim();
+    const last=String(f.get("last_name")||"").trim();
+    const row={first_name:first,last_name:last,full_name:[first,last].filter(Boolean).join(" "),phone:f.get("phone"),role:f.get("role"),hourly_rate:Number(f.get("hourly_rate")||0),guard_id:f.get("guard_id"),epin:f.get("epin"),e_pin:f.get("epin"),tax_id:f.get("tax_id"),address:f.get("address"),emergency_contact:f.get("emergency_contact"),qualification:f.get("qualification"),iban:f.get("iban"),approved:f.get("approved")==="on"};
+    const r=await sb.from("profiles").update(row).eq("id",id);
+    if(r.error)return msg(r.error.message);
+    closeModal();await loadAll();render();
+  };
+
+  const oldRender=window.render||render;
+  window.render=function(){
+    const out=oldRender();
+    setTimeout(enhanceJobs,400);
+    return out;
+  };
+  setTimeout(enhanceJobs,1000);
+})();
+
 init();
 }catch(e){document.getElementById("root").innerHTML='<div class="error"><b>Startfehler:</b>\\n'+String(e.message)+'</div>'}
 </script>
