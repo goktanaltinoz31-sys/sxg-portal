@@ -2473,6 +2473,35 @@ window.leaveHtml = function(){
   };
 })();
 
+
+/* SXG v14.1 Excel API Fehleranzeige Fix */
+(function(){
+  window.generateJobExcel = async function(jobId,fileId){
+    await loadAll();
+    const job=jobOf(jobId);
+    const file=state.job_excel_files.find(f=>String(f.id)===String(fileId))||state.job_excel_files.find(f=>String(f.job_id)===String(jobId));
+    if(!file)return msg("Bitte zuerst Kunden-Excel hochladen.");
+    if(file.template_name && !String(file.template_name).toLowerCase().endsWith(".xlsx")){
+      return msg("Bitte als .xlsx hochladen. Alte .xls-Dateien werden nicht unterstützt.");
+    }
+    const employees=state.assignments
+      .filter(a=>String(a.job_id)===String(jobId))
+      .map(a=>state.profiles.find(p=>p.id===(a.profile_id||a.employee_id)))
+      .filter(Boolean)
+      .map(p=>({full_name:p.full_name||p.email||"",email:p.email||"",phone:p.phone||"",guard_id:p.guard_id||"",epin:p.epin||p.e_pin||"",tax_id:p.tax_id||"",qualification:p.qualification||""}));
+    if(!employees.length)return msg("Keine Mitarbeiter im Auftrag eingetragen.");
+
+    const res=await fetch("/api/fill-excel",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({jobId,fileId:file.id,templatePath:file.template_path,templateName:file.template_name,employees,job:{title:job?.title,client:job?.client,location:job?.location,address:job?.address,job_date:jobDate(job),start_time:job?.start_time,end_time:job?.end_time}})});
+
+    let data={}, raw="";
+    try{raw=await res.text();data=JSON.parse(raw)}catch(e){data={error:raw||"Keine API-Antwort"}}
+    if(!res.ok)return msg("Excel konnte nicht erstellt werden: "+(data.error||("HTTP "+res.status)));
+
+    await sb.from("job_excel_files").update({generated_path:data.generatedPath,generated_name:data.generatedName,status:"generated",generated_at:new Date().toISOString()}).eq("id",file.id);
+    await loadAll();render();msg("Excel wurde erstellt.");
+  };
+})();
+
 init();
 }catch(e){document.getElementById("root").innerHTML='<div class="error"><b>Startfehler:</b>\\n'+String(e.message)+'</div>'}
 </script>
