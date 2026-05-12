@@ -18,6 +18,8 @@ function findColumns(sheet) {
     const row = sheet.getRow(r);
     row.eachCell({ includeEmpty: false }, (cell, c) => {
       const t = norm(cell.value);
+      if (!found.first && (t.includes("vorname") || t.includes("first name"))) found.first = { row: r, col: c };
+      if (!found.last && (t.includes("nachname") || t.includes("last name") || t.includes("surname"))) found.last = { row: r, col: c };
       if (!found.name && (t.includes("name") || t.includes("mitarbeiter") || t.includes("personal"))) found.name = { row: r, col: c };
       if (!found.epin && (t.includes("e-pin") || t.includes("epin") || t === "pin" || t.includes("e pin"))) found.epin = { row: r, col: c };
       if (!found.guard && (t.includes("bewacher") || t.includes("guard") || t.includes("ausweis"))) found.guard = { row: r, col: c };
@@ -59,11 +61,13 @@ module.exports = async function handler(req, res) {
     if (!sheet) return res.status(400).json({ error: "Keine Tabelle in der Excel gefunden." });
 
     const c = findColumns(sheet);
-    const startRow = (c.name?.row || c.epin?.row || c.guard?.row || 1) + 1;
+    const startRow = (c.first?.row || c.last?.row || c.name?.row || c.epin?.row || c.guard?.row || 1) + 1;
 
     employees.forEach((emp, i) => {
       const row = sheet.getRow(startRow + i);
-      row.getCell(c.name?.col || 1).value = emp.full_name || "";
+      if (c.first) row.getCell(c.first.col).value = emp.first_name || "";
+      if (c.last) row.getCell(c.last.col).value = emp.last_name || "";
+      row.getCell(c.name?.col || 1).value = emp.full_name || [emp.first_name, emp.last_name].filter(Boolean).join(" ") || "";
       row.getCell(c.epin?.col || 2).value = emp.epin || "";
       if (c.guard) row.getCell(c.guard.col).value = emp.guard_id || "";
       if (c.phone) row.getCell(c.phone.col).value = emp.phone || "";
